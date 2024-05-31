@@ -7,6 +7,9 @@ import time
 from concurrent.futures import ProcessPoolExecutor
 import py3Dmol
 from stmol import showmol
+import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
+import numpy as np
 
 def parse_basis_line(line):
     parts = line.split(':', 1)
@@ -210,24 +213,28 @@ def sort_dataframe_naturally(df, column):
     return df
 
 def process_file(file_info):
-    entry, file_path = file_info
-    originating_atom = entry
-    df_alpha, df_beta, df_auxiliary, df_orbital, df_model, df_energies, df_xray_transitions, df_atomic_coordinates = extract_all_information(file_path, originating_atom)
-
-    file_name = os.path.basename(file_path)
-    df_auxiliary['Originating File'] = file_name
-    df_orbital['Originating File'] = file_name
-    df_model['Originating File'] = file_name
-    df_alpha['Originating File'] = file_name
-    df_beta['Originating File'] = file_name
-    df_energies['Originating File'] = file_name
-    df_xray_transitions['Originating File'] = file_name
-    df_atomic_coordinates['Originating File'] = file_name
-    df_combined = df_auxiliary.merge(df_orbital, on=['Atom', 'Originating File'], how='outer').merge(df_model, on=['Atom', 'Originating File'], how='outer')
+    try:
+        entry, file_path = file_info
+        originating_atom = entry
+        df_alpha, df_beta, df_auxiliary, df_orbital, df_model, df_energies, df_xray_transitions, df_atomic_coordinates = extract_all_information(file_path, originating_atom)
+    
+        file_name = os.path.basename(file_path)
+        df_auxiliary['Originating File'] = file_name
+        df_orbital['Originating File'] = file_name
+        df_model['Originating File'] = file_name
+        df_alpha['Originating File'] = file_name
+        df_beta['Originating File'] = file_name
+        df_energies['Originating File'] = file_name
+        df_xray_transitions['Originating File'] = file_name
+        df_atomic_coordinates['Originating File'] = file_name
+        df_combined = df_auxiliary.merge(df_orbital, on=['Atom', 'Originating File'], how='outer').merge(df_model, on=['Atom', 'Originating File'], how='outer')
+    except Exception as e:
+        print(f"Error processing file {file_path}: {e}")
+        return None
 
     return df_combined, df_energies, df_alpha, df_beta, df_xray_transitions, df_atomic_coordinates
 
-def process_directory(directory, progress_bar, progress_text):
+def process_directory(directory, progress_bar, progress_text, width1, width2, ewid1, ewid2):
     combined_results_list = []
     energy_results_list = []
     orbital_alpha_list = []
@@ -267,7 +274,7 @@ def process_directory(directory, progress_bar, progress_text):
             progress_text.text(f'Processing: {percentage_complete*100:.2f}% completed.')
 
     combined_results = pd.concat(combined_results_list, ignore_index=True)
-    energy_results = pd.concat(energy_results_list, ignore_index=True).drop_duplicates()
+    energy_results = pd.concat(energy_results_list, ignore_index=True)
     orbital_alpha = pd.concat(orbital_alpha_list, ignore_index=True)
     orbital_beta = pd.concat(orbital_beta_list, ignore_index=True)
     xray_transitions = pd.concat(xray_transitions_list, ignore_index=True)
@@ -277,6 +284,9 @@ def process_directory(directory, progress_bar, progress_text):
     
     # Ensure that the Atom column in energy_results is capitalized
     energy_results['Atom'] = energy_results['Atom'].str.upper()
+    
+    energy_results = energy_results.drop_duplicates()
+    energy_results = energy_results.reset_index(drop=True)
 
     # Add the Atom column and move it to the first position in orbital_alpha, orbital_beta, and xray_transitions
     for df_name, df in [('orbital_alpha', orbital_alpha), ('orbital_beta', orbital_beta), ('xray_transitions', xray_transitions)]:
@@ -290,7 +300,17 @@ def process_directory(directory, progress_bar, progress_text):
             orbital_beta = df
         elif df_name == 'xray_transitions':
             xray_transitions = df
-
+    
+    def broad(E):
+        if E < ewid1:
+            return width1
+        elif E > ewid2:
+            return width2
+        else:
+            return width1 + (width2 - width1) * (E - ewid1) / (ewid2 - ewid1)
+    
+    xray_transitions['width'] = xray_transitions['E (eV)'].apply(broad)
+    
     return combined_results, energy_results, orbital_alpha, orbital_beta, xray_transitions, atomic_coordinates
 
 def dataframe_to_xyz(df, file_name="molecule.xyz"):
@@ -346,34 +366,135 @@ def visualize_xyz_with_stmol(df, file_name):
     
     view.zoomTo()
     return view
-        
-# Streamlit application
-st.set_page_config(layout="wide")
-st.title('X-ray Absorption Spectrum Analysis')
 
-directory = st.text_input('Enter the directory containing the output folders:')
-if directory:
-    if os.path.isdir(directory):
-        st.write('Processing directory:', directory)
+def plot_spectra(xray_transitions, E_max):
+    """
+    Generates and plots spectra for each unique atom in the xray_transitions DataFrame.
+
+    Parameters:
+    xray_transitions (pd.DataFrame): DataFrame containing the x-ray transitions with 'Atom', 'E (eV)', 'width', and 'OSCL' columns.
+    E_max (float): Maximum energy value for the x-axis range.
+    """
+    unique_atoms = natsorted(xray_transitions['Atom'].unique())  # Sort atoms in natural order
+    
+    num_atoms = len(unique_atoms)
+    num_cols = 4  # Define the number of columns for the grid
+    num_rows = (num_atoms + num_cols - 1) // num_cols  # Calculate the number of rows needed
+
+    fig, axs = plt.subplots(num_rows, num_cols, figsize=(20, 10))
+    axs = axs.flatten()  # Flatten the 2D array of axes for easier iteration
+
+    for i, atom in enumerate(unique_atoms):
+        filtered_df = xray_transitions[xray_transitions['Atom'] == atom]
         
-        progress_bar = st.progress(0)
-        progress_text = st.empty()
+        # Define the energy range for the plot
+        E_min = filtered_df['E (eV)'].min() - 10
+        E_range = np.linspace(E_min, E_max, 2000)
+
+        # Initialize the spectrum
+        spectrum = np.zeros_like(E_range)
+
+        E_values = filtered_df['E (eV)'].values
+        width_values = filtered_df['width'].values
+        amplitude_values = filtered_df['OSCL'].values
         
-        start_time = time.time()
-        # Assuming process_directory function is defined elsewhere and returns required dataframes
-        basis_sets, energy_results, orbital_alpha, orbital_beta, xray_transitions, atomic_coordinates = process_directory(directory, progress_bar, progress_text)
-        end_time = time.time()
+        # Create a 2D array for E_range to enable broadcasting
+        E_range_2D = E_range[:, np.newaxis]
         
-        st.write(f'Processing completed in {end_time - start_time:.2f} seconds.')
+        # Compute the Gaussians for all rows at once
+        gaussians = (amplitude_values / (width_values * np.sqrt(2 * np.pi))) * \
+                    np.exp(-((E_range_2D - E_values) ** 2) / (2 * width_values ** 2))
         
-        # Display Atomic Coordinates and Molecule Visualization side by side
-        st.write('### Atomic Coordinates and Molecule Visualization')
-        col1, col2 = st.columns(2)
+        # Sum the Gaussians along the second axis (columns)
+        spectrum = np.sum(gaussians, axis=1)
+
+        # Plot the spectrum
+        ax1 = axs[i]
+        ax1.plot(E_range, spectrum, label='Spectrum')
+        ax1.set_xlabel('Energy (eV)')
+        ax1.set_ylabel('Intensity')
+        ax1.set_xlim([E_min, E_max])
+        ax1.set_title(f'Spectrum for {atom}')
         
-        with col1:
+        # Create a secondary y-axis for the OSCL vs E (eV) plot
+        ax2 = ax1.twinx()
+        # Plot the vertical lines using a single call to vlines
+        ax2.vlines(x=E_values, ymin=0, ymax=amplitude_values, color='r')
+        ax2.set_ylabel('OS')
+        ax2.set_xlim([E_min, E_max])
+        
+        # Create a single custom legend entry for the sticks
+        if not filtered_df.empty:
+            custom_line = Line2D([0], [0], color='r', lw=2, label='OS')
+        
+        # Title and legend
+        ax1.legend(loc='upper left')
+        if not filtered_df.empty:
+            ax2.legend(handles=[custom_line], loc='upper right')
+
+    # Remove any empty subplots
+    for j in range(i + 1, len(axs)):
+        fig.delaxes(axs[j])
+
+    fig.tight_layout()
+    # Display the plot in Streamlit
+    st.pyplot(fig)
+        
+def main():
+    st.set_page_config(layout="wide")
+    st.title('X-ray Absorption Spectrum Analysis')
+
+    col1, col2, col3, col4, col5 = st.columns([2, 1, 1,1,1])
+
+    with col1:
+        directory = st.text_input('Enter the directory containing the output folders:')
+    
+    with col2:
+        width1 = st.number_input('Width 1 (eV)', min_value=0.01, max_value=20.0, value=1.0)/2.355
+    
+    with col3:
+        width2 = st.number_input('Width 2 (eV)', min_value=0.01, max_value=20.0, value=1.0)/2.355
+        
+    with col4:
+        maxEnergy = st.number_input('Maximum DFT Energy (eV)', min_value=0.0, max_value=1000.0, value=1.0)
+
+
+
+    if directory and st.button('Process Directory'):
+        if os.path.isdir(directory):
+            st.write('Processing directory:', directory)
+            
+            progress_bar = st.progress(0)
+            progress_text = st.empty()
+            
+            start_time = time.time()
+            # Process the directory
+            basis_sets, energy_results, orbital_alpha, orbital_beta, xray_transitions, atomic_coordinates = process_directory(directory, progress_bar, progress_text, width1, width2, 290, maxEnergy)
+            end_time = time.time()
+            
+            st.write(f'Processing completed in {end_time - start_time:.2f} seconds.')
+            
+            # Store the results in session state
+            st.session_state['processed_data'] = {
+                'basis_sets': basis_sets,
+                'energy_results': energy_results,
+                'orbital_alpha': orbital_alpha,
+                'orbital_beta': orbital_beta,
+                'xray_transitions': xray_transitions,
+                'atomic_coordinates': atomic_coordinates
+            }
+        else:
+            st.write('Invalid directory. Please enter a valid directory path.')
+
+    if 'processed_data' in st.session_state:
+        if st.button('Display Results'):
+            data = st.session_state['processed_data']
+            atomic_coordinates = data['atomic_coordinates']
+            
+            # Display Atomic Coordinates and Molecule Visualization side by side
+            st.write('### Atomic Coordinates and Molecule Visualization')
             st.dataframe(atomic_coordinates)
-        
-        with col2:
+            
             # Dropdown menu to filter based on Originating File
             unique_files = atomic_coordinates['Originating File'].unique()
             selected_file = st.selectbox('Select Originating File:', unique_files)
@@ -384,22 +505,36 @@ if directory:
             if not filtered_atomic_coordinates.empty:
                 # Create XYZ file from filtered DataFrame
                 dataframe_to_xyz(filtered_atomic_coordinates, "molecule.xyz")
-            
+                
                 # Visualize the molecule from the XYZ file using Stmol and py3Dmol
                 view = visualize_xyz_with_stmol(filtered_atomic_coordinates, "molecule.xyz")
                 showmol(view, height=600, width=600)
             else:
                 st.write("No data available for the selected file.")
-        
-        st.write('### Combined Basis Sets Results')
-        st.dataframe(basis_sets)
-        st.write('### Combined Energy Results')
-        st.dataframe(energy_results)
-        st.write('### Orbital Alpha Data')
-        st.dataframe(orbital_alpha)
-        st.write('### Orbital Beta Data')
-        st.dataframe(orbital_beta)
-        st.write('### X-ray Transitions Data')
-        st.dataframe(xray_transitions)
-    else:
-        st.write('Invalid directory. Please enter a valid directory path.')
+                
+            st.write('### Combined Basis Sets Results')
+            st.dataframe(data['basis_sets'])
+            st.write('### Combined Energy Results')
+            st.dataframe(data['energy_results'])
+            
+            # Display alfa and beta orbital dataframes next to one another
+            col1, col2 = st.columns([2, 2])
+            with col1:
+                st.write('### Orbital Alpha Data')
+                st.dataframe(data['orbital_alpha'])
+            with col2:
+                st.write('### Orbital Beta Data')
+                st.dataframe(data['orbital_beta'])
+            
+            # Display X-ray Transitions Data and plot next to it
+            col1, col2 = st.columns([2, 3])
+            
+            with col1:
+                st.write('### X-ray Transitions Data')
+                st.dataframe(data['xray_transitions'])
+                
+            with col2:
+                plot_spectra(data['xray_transitions'], maxEnergy)
+
+if __name__ == '__main__':
+    main()
