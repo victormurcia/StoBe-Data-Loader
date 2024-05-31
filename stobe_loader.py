@@ -133,58 +133,67 @@ def sort_dataframe_naturally(df, column):
     df = df.set_index(column).loc[sorted_index].reset_index()
     return df
 
+def process_file(file_info):
+    entry, file_path = file_info
+    originating_atom = entry
+    df_alpha, df_beta, df_auxiliary, df_orbital, df_model, df_energies = extract_all_information(file_path, originating_atom)
+
+    file_name = os.path.basename(file_path)
+    df_auxiliary['Originating File'] = file_name
+    df_orbital['Originating File'] = file_name
+    df_model['Originating File'] = file_name
+    df_alpha['Originating File'] = file_name
+    df_beta['Originating File'] = file_name
+    df_energies['Originating File'] = file_name
+
+    df_combined = df_auxiliary.merge(df_orbital, on=['Atom', 'Originating File'], how='outer').merge(df_model, on=['Atom', 'Originating File'], how='outer')
+
+    return df_combined, df_energies, df_alpha, df_beta
+
 def process_directory(directory, progress_bar, progress_text):
-    combined_results = pd.DataFrame()
-    energy_results = pd.DataFrame()
-    orbital_alpha = pd.DataFrame()
-    orbital_beta = pd.DataFrame()
+    combined_results_list = []
+    energy_results_list = []
+    orbital_alpha_list = []
+    orbital_beta_list = []
+
     pattern = re.compile(r'^[A-Za-z]+\d+$')
     entries = [entry for entry in os.listdir(directory) if os.path.isdir(os.path.join(directory, entry)) and pattern.match(entry)]
-    
-    total_files = 0
-    for entry in entries:
-        entry_path = os.path.join(directory, entry)
-        for file in os.listdir(entry_path):
-            if file.endswith(('_tp.out', 'gnd.out', 'exc.out')):
-                total_files += 1
 
-    st.write(f'Total files to process: {total_files}')
-    
-    processed_files = 0
+    # Collect file paths in a single pass
+    file_paths = []
     for entry in entries:
         entry_path = os.path.join(directory, entry)
-        originating_atom = entry
         for file in os.listdir(entry_path):
             if file.endswith(('_tp.out', 'gnd.out', 'exc.out')):
-                file_path = os.path.join(entry_path, file)
-                #st.write(f'Reading file: {file_path}')
-                
-                df_alpha, df_beta, df_auxiliary, df_orbital, df_model, df_energies = extract_all_information(file_path, originating_atom)
-                
-                df_auxiliary['Originating File'] = file
-                df_orbital['Originating File'] = file
-                df_model['Originating File'] = file
-                df_alpha['Originating File'] = file
-                df_beta['Originating File'] = file
-                df_energies['Originating File'] = file
-                
-                df_combined = df_auxiliary.merge(df_orbital, on=['Atom', 'Originating File'], how='outer').merge(df_model, on=['Atom', 'Originating File'], how='outer')
-                
-                combined_results = pd.concat([combined_results, df_combined], ignore_index=True)
-                energy_results = pd.concat([energy_results, df_energies], ignore_index=True)
-                
-                orbital_alpha = pd.concat([orbital_alpha, df_alpha], ignore_index=True)
-                orbital_beta = pd.concat([orbital_beta, df_beta], ignore_index=True)               
-                
-                processed_files += 1
-                percentage_complete = min((processed_files / total_files), 1.0)
-                progress_bar.progress(percentage_complete)
-                progress_text.text(f'Processing: {percentage_complete*100:.2f}% completed.')
+                file_paths.append((entry, os.path.join(entry_path, file)))
+
+    total_files = len(file_paths)
+    st.write(f'Total files to process: {total_files}')
+
+    processed_files = 0
+
+    with ProcessPoolExecutor() as executor:
+        for df_combined, df_energies, df_alpha, df_beta in executor.map(process_file, file_paths):
+            combined_results_list.append(df_combined)
+            energy_results_list.append(df_energies)
+            orbital_alpha_list.append(df_alpha)
+            orbital_beta_list.append(df_beta)
+
+            processed_files += 1
+            percentage_complete = min((processed_files / total_files), 1.0)
+            progress_bar.progress(percentage_complete)
+            progress_text.text(f'Processing: {percentage_complete*100:.2f}% completed.')
+
+    combined_results = pd.concat(combined_results_list, ignore_index=True)
+    energy_results = pd.concat(energy_results_list, ignore_index=True).drop_duplicates()
+    orbital_alpha = pd.concat(orbital_alpha_list, ignore_index=True)
+    orbital_beta = pd.concat(orbital_beta_list, ignore_index=True)
 
     energy_results = sort_dataframe_naturally(energy_results, 'Atom')
     
     # Remove duplicates from energy_results
     energy_results = energy_results.drop_duplicates()
+    
     return combined_results, energy_results, orbital_alpha, orbital_beta
 
 st.title('X-ray Absorption Spectrum Analysis')
