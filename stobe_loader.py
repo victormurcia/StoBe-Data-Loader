@@ -439,6 +439,41 @@ def plot_spectra(xray_transitions, E_max):
     fig.tight_layout()
     # Display the plot in Streamlit
     st.pyplot(fig)
+
+def find_core_hole_homo_lumo(orbital_alpha):
+    results = []
+    
+    # Convert Occup. column to float
+    orbital_alpha['Occup.'] = orbital_alpha['Occup.'].astype(float)
+    
+
+    # Group by unique Atom and Originating File
+    grouped = orbital_alpha.groupby(['Atom', 'Originating File'])
+    
+    for (atom, file), group in grouped:
+        core_hole, homo, lumo = None, None, None
+        
+        core_hole_row = group[group['Occup.'] == 0.5]
+        if not core_hole_row.empty:
+            core_hole = core_hole_row.iloc[0]['MO_Index']
+    
+        homo_rows = group[group['Occup.'] == 1.0]
+        if not homo_rows.empty:
+            homo_index = homo_rows.index[-1]
+            homo = homo_rows.iloc[-1]['MO_Index']
+            lumo_index = homo_index + 1
+            if lumo_index in group.index:
+                lumo = group.loc[lumo_index]['MO_Index']
+        
+        results.append({
+            'Atom': atom,
+            'File': file,
+            'Core Hole': core_hole,
+            'HOMO': homo,
+            'LUMO': lumo
+        })
+    
+    return pd.DataFrame(results)
         
 def main():
     st.set_page_config(layout="wide")
@@ -491,26 +526,30 @@ def main():
             data = st.session_state['processed_data']
             atomic_coordinates = data['atomic_coordinates']
             
+            
             # Display Atomic Coordinates and Molecule Visualization side by side
             st.write('### Atomic Coordinates and Molecule Visualization')
-            st.dataframe(atomic_coordinates)
+            col1,col2  = st.columns([2,2])
+            with col1:
+                st.dataframe(atomic_coordinates)
             
-            # Dropdown menu to filter based on Originating File
-            unique_files = atomic_coordinates['Originating File'].unique()
-            selected_file = st.selectbox('Select Originating File:', unique_files)
-            
-            # Filter the dataframe based on the selected file
-            filtered_atomic_coordinates = atomic_coordinates[atomic_coordinates['Originating File'] == selected_file]
-            
-            if not filtered_atomic_coordinates.empty:
-                # Create XYZ file from filtered DataFrame
-                dataframe_to_xyz(filtered_atomic_coordinates, "molecule.xyz")
+            with col2:
+                # Dropdown menu to filter based on Originating File
+                unique_file = atomic_coordinates['Originating File'].unique()[0]
+                #selected_file = st.selectbox('Select Originating File:', unique_files)
                 
-                # Visualize the molecule from the XYZ file using Stmol and py3Dmol
-                view = visualize_xyz_with_stmol(filtered_atomic_coordinates, "molecule.xyz")
-                showmol(view, height=600, width=600)
-            else:
-                st.write("No data available for the selected file.")
+                # Filter the dataframe based on the selected file
+                filtered_atomic_coordinates = atomic_coordinates[atomic_coordinates['Originating File'] == unique_file]
+                
+                if not filtered_atomic_coordinates.empty:
+                    # Create XYZ file from filtered DataFrame
+                    dataframe_to_xyz(filtered_atomic_coordinates, "molecule.xyz")
+                    
+                    # Visualize the molecule from the XYZ file using Stmol and py3Dmol
+                    view = visualize_xyz_with_stmol(filtered_atomic_coordinates, "molecule.xyz")
+                    showmol(view, height=400, width=400)
+                else:
+                    st.write("No data available for the selected file.")
                 
             st.write('### Combined Basis Sets Results')
             st.dataframe(data['basis_sets'])
@@ -518,13 +557,19 @@ def main():
             st.dataframe(data['energy_results'])
             
             # Display alfa and beta orbital dataframes next to one another
-            col1, col2 = st.columns([2, 2])
+            col1, col2,col3 = st.columns([2, 2, 2])
             with col1:
                 st.write('### Orbital Alpha Data')
                 st.dataframe(data['orbital_alpha'])
             with col2:
                 st.write('### Orbital Beta Data')
                 st.dataframe(data['orbital_beta'])
+                
+            # Finding Core Hole, HOMO and LUMO
+            core_hole_homo_lumo_df = find_core_hole_homo_lumo(data['orbital_alpha'])
+            with col3:
+                st.write('### Core Hole, HOMO, and LUMO Results')
+                st.dataframe(core_hole_homo_lumo_df)
             
             # Display X-ray Transitions Data and plot next to it
             col1, col2 = st.columns([2, 3])
