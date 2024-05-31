@@ -1,0 +1,7 @@
+pandas==2.2.2
+streamlit==1.35.0
+natsort==8.4.0
+py3Dmol==2.0.0.post2
+stmol==0.0.9
+matplotlib==3.9.0
+numpy==1.26.4
