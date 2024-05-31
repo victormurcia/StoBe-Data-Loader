@@ -16,6 +16,70 @@ def parse_basis_line(line):
         return atom, basis
     return None, None
 
+def extract_energy_information(lines):
+    """
+    Extracts energy information from the given lines and returns it as a dictionary.
+    
+    Parameters:
+    lines (list): The lines of the file containing the calculation results.
+    
+    Returns:
+    dict: A dictionary containing the extracted energy information.
+    """
+    energies = {
+        "Total energy (H)": None,
+        "Nuc-nuc energy (H)": None,
+        "El-nuc energy (H)": None,
+        "Kinetic energy (H)": None,
+        "Coulomb energy (H)": None,
+        "Ex-cor energy (H)": None,
+        "Orbital energy core hole (H)": None,
+        "Orbital energy core hole (eV)": None,
+        "Rigid spectral shift (eV)": None,
+        "Ionization potential (eV)": None,
+    }
+
+    for line in lines:
+        if "Total energy   (H)" in line:
+            match = re.search(r"Total energy\s+\(H\)\s*=\s*([-+]?[0-9]*\.?[0-9]+)", line)
+            if match:
+                energies["Total energy (H)"] = float(match.group(1))
+        elif "Nuc-nuc energy (H)" in line:
+            match = re.search(r"Nuc-nuc energy\s+\(H\)\s*=\s*([-+]?[0-9]*\.?[0-9]+)", line)
+            if match:
+                energies["Nuc-nuc energy (H)"] = float(match.group(1))
+        elif "El-nuc energy  (H)" in line:
+            match = re.search(r"El-nuc energy\s+\(H\)\s*=\s*([-+]?[0-9]*\.?[0-9]+)", line)
+            if match:
+                energies["El-nuc energy (H)"] = float(match.group(1))
+        elif "Kinetic energy (H)" in line:
+            match = re.search(r"Kinetic energy\s+\(H\)\s*=\s*([-+]?[0-9]*\.?[0-9]+)", line)
+            if match:
+                energies["Kinetic energy (H)"] = float(match.group(1))
+        elif "Coulomb energy (H)" in line:
+            match = re.search(r"Coulomb energy\s+\(H\)\s*=\s*([-+]?[0-9]*\.?[0-9]+)", line)
+            if match:
+                energies["Coulomb energy (H)"] = float(match.group(1))
+        elif "Ex-cor energy  (H)" in line:
+            match = re.search(r"Ex-cor energy\s+\(H\)\s*=\s*([-+]?[0-9]*\.?[0-9]+)", line)
+            if match:
+                energies["Ex-cor energy (H)"] = float(match.group(1))
+        elif "Orbital energy core hole" in line:
+            match = re.search(r"Orbital energy core hole\s*=\s*([-+]?[0-9]*\.?[0-9]+)\s*H\s*\(\s*([-+]?[0-9]*\.?[0-9]+)\s*eV\s*\)", line)
+            if match:
+                energies["Orbital energy core hole (H)"] = float(match.group(1))
+                energies["Orbital energy core hole (eV)"] = float(match.group(2))
+        elif "Rigid spectral shift" in line:
+            match = re.search(r"Rigid spectral shift\s*=\s*([-+]?[0-9]*\.?[0-9]+)\s*eV", line)
+            if match:
+                energies["Rigid spectral shift (eV)"] = float(match.group(1))
+        elif "Ionization potential" in line:
+            match = re.search(r"Ionization potential\s*=\s*([-+]?[0-9]*\.?[0-9]+)\s*eV", line)
+            if match:
+                energies["Ionization potential (eV)"] = float(match.group(1))
+
+    return energies
+
 def extract_all_information(file_path, originating_atom):
     """
     Extracts orbital data, basis sets, energy information, x-ray transition data, and atomic coordinates from the given file.
@@ -34,23 +98,13 @@ def extract_all_information(file_path, originating_atom):
     model_potential = []
     xray_transitions = []
     atomic_coordinates = []
-    energies = {
-        "Total energy (H)": None,
-        "Nuc-nuc energy (H)": None,
-        "El-nuc energy (H)": None,
-        "Kinetic energy (H)": None,
-        "Coulomb energy (H)": None,
-        "Ex-cor energy (H)": None,
-        "Orbital energy core hole (H)": None,
-        "Orbital energy core hole (eV)": None,
-        "Rigid spectral shift (eV)": None,
-        "Ionization potential (eV)": None,
-        "Atom": originating_atom,
-        "Calculation Type": "TP" if "_tp.out" in file_path else "GND" if "gnd.out" in file_path else "EXC" if "exc.out" in file_path else None
-    }
 
     with open(file_path, 'r') as file:
         lines = file.readlines()
+        
+    energies = extract_energy_information(lines)
+    energies["Atom"] = originating_atom
+    energies["Calculation Type"] = "TP" if "_tp.out" in file_path else "GND" if "gnd.out" in file_path else "EXC" if "exc.out" in file_path else None
 
     start_index = None
     end_index = None
@@ -58,7 +112,7 @@ def extract_all_information(file_path, originating_atom):
     atomic_start_index = None
     atomic_end_index = None
     current_section = None
-    
+
     for i, line in enumerate(lines):
         if "         Spin alpha                              Spin beta" in line:
             start_index = i + 2
@@ -109,29 +163,6 @@ def extract_all_information(file_path, originating_atom):
                     orbital_basis.append([atom, basis])
                 elif current_section == "model":
                     model_potential.append([atom, basis])
-        elif "Total energy   (H)" in line:
-            match = re.search(r"Total energy   \(H\) =\s*([-+]?[0-9]*\.?[0-9]+)", line)
-            if match:
-                energies["Total energy (H)"] = float(match.group(1))
-        elif "Nuc-nuc energy (H)" in line:
-            energies["Nuc-nuc energy (H)"] = float(line.split('=')[-1].strip())
-        elif "El-nuc energy  (H)" in line:
-            energies["El-nuc energy (H)"] = float(line.split('=')[-1].strip())
-        elif "Kinetic energy (H)" in line:
-            energies["Kinetic energy (H)"] = float(line.split('=')[-1].strip())
-        elif "Coulomb energy (H)" in line:
-            energies["Coulomb energy (H)"] = float(line.split('=')[-1].strip())
-        elif "Ex-cor energy  (H)" in line:
-            energies["Ex-cor energy (H)"] = float(line.split('=')[-1].strip())
-        elif "Orbital energy core hole" in line:
-            match = re.search(r"Orbital energy core hole\s*=\s*([-+]?[0-9]*\.?[0-9]+)\s*H\s*\(\s*([-+]?[0-9]*\.?[0-9]+)\s*eV\s*\)", line)
-            if match:
-                energies["Orbital energy core hole (H)"] = float(match.group(1))
-                energies["Orbital energy core hole (eV)"] = float(match.group(2))
-        elif "Rigid spectral shift" in line:
-            energies["Rigid spectral shift (eV)"] = float(line.split('=')[-1].strip().split()[0])
-        elif "Ionization potential" in line:
-            energies["Ionization potential (eV)"] = float(line.split('=')[-1].strip().split()[0])
 
     if start_index is not None and end_index is not None:
         for line in lines[start_index:end_index]:
@@ -166,8 +197,11 @@ def extract_all_information(file_path, originating_atom):
 
     numeric_columns = ['x', 'y', 'z', 'q', 'nuc', 'mass', 'neq', 'grid', 'grp']
     df_atomic_coordinates[numeric_columns] = df_atomic_coordinates[numeric_columns].apply(pd.to_numeric, errors='coerce')
-
+    
+    print(df_energies)
+    
     return df_alpha, df_beta, df_auxiliary, df_orbital, df_model, df_energies, df_xray_transitions, df_atomic_coordinates
+
 
 def sort_dataframe_naturally(df, column):
     df[column] = df[column].astype(str)
