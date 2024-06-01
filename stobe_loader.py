@@ -10,6 +10,9 @@ from stmol import showmol
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 import numpy as np
+import seaborn as sns
+from scipy.integrate import quad
+from joblib import Parallel, delayed
 
 def parse_basis_line(line):
     parts = line.split(':', 1)
@@ -143,11 +146,11 @@ def extract_all_information(file_path, originating_atom):
                 r2 = float(line[73:].strip())
                 xray_transitions.append({
                     "Index": index,
-                    "E (eV)": e_ev,
-                    "OSCL": oscl,
-                    "oslx": oslx,
-                    "osly": osly,
-                    "oslz": oslz,
+                    "E": e_ev,
+                    "OS": oscl,
+                    "osx": oslx,
+                    "osy": osly,
+                    "osz": oslz,
                     "osc(r2)": osc_r2,
                     "<r2>": r2
                 })
@@ -309,8 +312,42 @@ def process_directory(directory, progress_bar, progress_text, width1, width2, ew
         else:
             return width1 + (width2 - width1) * (E - ewid1) / (ewid2 - ewid1)
     
-    xray_transitions['width'] = xray_transitions['E (eV)'].apply(broad)
+    xray_transitions['width'] = xray_transitions['E'].apply(broad)
     
+    # Calculate the magnitude of the vector
+    magnitude = np.sqrt(xray_transitions['osx']**2 + xray_transitions['osy']**2 + xray_transitions['osz']**2)
+    
+    # Create new columns with the normalized components
+    xray_transitions['normalized_osx'] = xray_transitions['osx'] / magnitude
+    xray_transitions['normalized_osy'] = xray_transitions['osy'] / magnitude
+    xray_transitions['normalized_osz'] = xray_transitions['osz'] / magnitude
+    
+    # Calculate the magnitude of the normalized vector
+    normalized_magnitude = np.sqrt(xray_transitions['normalized_osx']**2 + xray_transitions['normalized_osy']**2 + xray_transitions['normalized_osz']**2)
+    
+    # Add the magnitude of the normalized vector to the dataframe
+    xray_transitions['normalized_magnitude'] = normalized_magnitude
+    
+    # Vector (0, 0, 1)
+    reference_vector = np.array([0, 0, 1])
+    
+    # Calculate the dot product and the angle theta
+    dot_product = (
+        xray_transitions['normalized_osx'] * reference_vector[0] +
+        xray_transitions['normalized_osy'] * reference_vector[1] +
+        xray_transitions['normalized_osz'] * reference_vector[2]
+    )
+    theta = np.arccos(dot_product)
+    
+    # Convert theta from radians to degrees
+    theta_degrees = np.degrees(theta)
+    
+    # Ensure the angle is between 0 and 90 degrees
+    theta_degrees = np.where(theta_degrees > 90, 180 - theta_degrees, theta_degrees)
+    
+    # Add theta to the dataframe
+    xray_transitions['theta'] = theta_degrees
+
     return combined_results, energy_results, orbital_alpha, orbital_beta, xray_transitions, atomic_coordinates
 
 def dataframe_to_xyz(df, file_name="molecule.xyz"):
@@ -367,7 +404,7 @@ def visualize_xyz_with_stmol(df, file_name):
     view.zoomTo()
     return view
 
-def plot_spectra(xray_transitions, E_max):
+def plot_individual_spectra(xray_transitions, E_max):
     """
     Generates and plots spectra for each unique atom in the xray_transitions DataFrame.
 
@@ -388,15 +425,15 @@ def plot_spectra(xray_transitions, E_max):
         filtered_df = xray_transitions[xray_transitions['Atom'] == atom]
         
         # Define the energy range for the plot
-        E_min = filtered_df['E (eV)'].min() - 10
+        E_min = filtered_df['E'].min() - 10
         E_range = np.linspace(E_min, E_max, 2000)
 
         # Initialize the spectrum
         spectrum = np.zeros_like(E_range)
 
-        E_values = filtered_df['E (eV)'].values
+        E_values = filtered_df['E'].values
         width_values = filtered_df['width'].values
-        amplitude_values = filtered_df['OSCL'].values
+        amplitude_values = filtered_df['OS'].values
         
         # Create a 2D array for E_range to enable broadcasting
         E_range_2D = E_range[:, np.newaxis]
@@ -440,6 +477,79 @@ def plot_spectra(xray_transitions, E_max):
     # Display the plot in Streamlit
     st.pyplot(fig)
 
+def plot_total_spectra(xray_transitions, E_max, molName, os_col, os_ylim=1.0):
+    """
+    Generates and plots the total spectra from the sum of all the Gaussians for each unique atom in the xray_transitions DataFrame.
+
+    Parameters:
+    xray_transitions (pd.DataFrame): DataFrame containing the x-ray transitions with 'Atom', 'E (eV)', 'width', and 'OSCL' columns.
+    E_max (float): Maximum energy value for the x-axis range.
+    """
+    
+    # Define the energy range for the plot
+    E_min = xray_transitions['E'].min() - 1
+    E_range = np.linspace(E_min, E_max, 2000)
+    
+    # Initialize the total spectrum
+    total_spectrum = np.zeros_like(E_range)
+
+    unique_atoms = xray_transitions['Atom'].unique()
+
+    for atom in unique_atoms:
+        filtered_df = xray_transitions[xray_transitions['Atom'] == atom]
+        
+        E_values = filtered_df['E'].values
+        width_values = filtered_df['width'].values
+        amplitude_values = filtered_df[os_col].values
+        
+        # Create a 2D array for E_range to enable broadcasting
+        E_range_2D = E_range[:, np.newaxis]
+        
+        # Compute the Gaussians for all rows at once
+        gaussians = (amplitude_values / (width_values * np.sqrt(2 * np.pi))) * \
+                    np.exp(-((E_range_2D - E_values) ** 2) / (2 * width_values ** 2))
+        
+        # Sum the Gaussians along the second axis (columns)
+        total_spectrum += np.sum(gaussians, axis=1)
+
+    # Plot the total spectrum
+    fig, ax1 = plt.subplots(figsize=(10, 8))
+    ax1.plot(E_range, total_spectrum, label='Total Spectrum')
+    ax1.set_xlabel('Energy (eV)')
+    ax1.set_ylabel('Intensity')
+    ax1.set_xlim([E_min, E_max])
+    ax1.set_title(f'Total Spectrum from {molName}')
+    
+    # Create a secondary y-axis for the OSCL vs E (eV) plot
+    ax2 = ax1.twinx()
+    
+    # Plot the vertical lines for each transition in red
+    for atom in unique_atoms:
+        filtered_df = xray_transitions[xray_transitions['Atom'] == atom]
+        E_values = filtered_df['E'].values
+        amplitude_values = filtered_df['OS'].values
+        ax2.vlines(x=E_values, ymin=0, ymax=amplitude_values, color='r')
+
+    ax2.set_ylabel('OS')
+    ax2.set_xlim([E_min, E_max])
+    if os_col == 'normalized_os':
+        ax2.set_ylim([0, os_ylim])
+    
+    # Ensure the 0 of both y-axes matches up
+    ax1.set_ylim(bottom=0)
+    ax2.set_ylim(bottom=0)
+    
+    # Create a single custom legend entry for the sticks
+    if not xray_transitions.empty:
+        custom_line = Line2D([0], [0], color='r', lw=2, label='OS')
+        ax2.legend(handles=[custom_line], loc='upper right')
+
+    ax1.legend(loc='upper left')
+    
+    fig.tight_layout()
+    # Display the plot in Streamlit
+    st.pyplot(fig)
+    
 def find_core_hole_homo_lumo(orbital_alpha):
     results = []
     
@@ -474,25 +584,173 @@ def find_core_hole_homo_lumo(orbital_alpha):
         })
     
     return pd.DataFrame(results)
-        
+
+def plot_density_spectra(xray_transitions,E_max,os_col):
+    """
+    Generates a 2D density plot for the xray_transitions DataFrame.
+
+    Parameters:
+    xray_transitions (pd.DataFrame): DataFrame containing the x-ray transitions with 'E (eV)', 'theta', and 'OSCL' columns.
+    """
+    
+    filtered_transitions = xray_transitions[xray_transitions['E'] < E_max]
+    
+    # Create the 2D KDE plot using seaborn
+    fig, ax = plt.subplots(figsize=(10, 8))
+
+    # KDE plot with OSCL as weights
+    sns.kdeplot(
+        x=filtered_transitions['E'],
+        y=filtered_transitions['theta'],
+        weights=filtered_transitions[os_col],
+        fill=True,
+        cmap="viridis",
+        ax=ax
+    )
+    
+    ax.set_xlim([filtered_transitions['E'].min()-10, E_max+10])
+    ax.set_ylim([-50, 125])
+    ax.set_xlabel('Energy (eV)')
+    ax.set_ylabel('Theta (degrees)')
+    ax.set_title('2D KDE Plot of X-ray Transitions')
+
+    fig.tight_layout()
+    # Display the plot in Streamlit
+    st.pyplot(fig)
+
+def filter_and_normalize_xray(df, maxE, OST):
+    """
+    Filters the dataframe based on the maxE and OST parameters, and adds a normalized_os column.
+
+    Parameters:
+    df (pd.DataFrame): The input dataframe with columns E, OS, and width.
+    maxE (float): The maximum value for the E column.
+    OST (float): The threshold as a percentage for the OS column.
+
+    Returns:
+    pd.DataFrame: The filtered and modified dataframe.
+    """
+    # Filter out rows where E is greater than maxE
+    df_filtered = df[df['E'] <= maxE]
+
+    # Normalize the OS column
+    max_os = df_filtered['OS'].max()
+    df_filtered['normalized_os'] = df_filtered['OS'] / max_os
+
+    # Filter out rows where normalized_os is less than OST and sort by ascending energy
+    df_filtered = df_filtered[df_filtered['normalized_os'] >= OST / 100]
+    df_filtered = df_filtered.sort_values(by='E')
+    df_filtered = df_filtered.reset_index(drop=True)
+    
+    return df_filtered
+
+def gaussian(x, mu, sigma, amplitude):
+    """Returns the value of a Gaussian function."""
+    return amplitude * np.exp(-((x - mu) ** 2) / (2 * sigma ** 2))
+
+def gaussian_area(mu, sigma, amplitude):
+    """Returns the area under a Gaussian function."""
+    return amplitude * sigma * np.sqrt(2 * np.pi)
+
+def overlap_area(mu1, sigma1, amplitude1, mu2, sigma2, amplitude2):
+    """Calculates the overlap area between two Gaussian peaks."""
+    integrand = lambda x: np.minimum(gaussian(x, mu1, sigma1, amplitude1), gaussian(x, mu2, sigma2, amplitude2))
+    # Integrate over a range wide enough to cover both peaks
+    lower_bound = min(mu1 - 3 * sigma1, mu2 - 3 * sigma2)
+    upper_bound = max(mu1 + 3 * sigma1, mu2 + 3 * sigma2)
+    overlap, _ = quad(integrand, lower_bound, upper_bound)
+    return overlap
+
+def calculate_percent_overlap(df, n_jobs=-1):
+    """Calculates the percent overlap matrix for peaks in the dataframe."""
+    # Sort the dataframe by the 'E' column in ascending order
+    df = df.sort_values(by='E').reset_index(drop=True)
+    
+    n = len(df)
+    overlap_matrix = np.zeros((n, n))
+
+    # Initialize Streamlit progress bar and timer
+    progress_bar = st.progress(0)
+    progress_text = st.empty()
+    timer_text = st.empty()
+    parallel_timer_text = st.empty()
+
+    mu = df['E'].values
+    sigma = df['width'].values
+    amplitude = df['OS'].values
+
+    total_areas = gaussian_area(mu, sigma, amplitude)
+
+    start_time = time.time()  # Start the timer
+
+    def compute_overlap_row(i):
+        overlaps = np.array([overlap_area(mu[i], sigma[i], amplitude[i], mu[j], sigma[j], amplitude[j]) for j in range(n)])
+        percent_overlaps = (overlaps / np.minimum(total_areas[i], total_areas)) * 100
+        return i, percent_overlaps
+
+    # Measure time for parallel execution
+    parallel_start_time = time.time()
+    results = Parallel(n_jobs=n_jobs)(delayed(compute_overlap_row)(i) for i in range(n))
+    parallel_elapsed_time = time.time() - parallel_start_time
+    parallel_timer_text.text(f'Parallel execution time: {parallel_elapsed_time:.2f} seconds')
+
+    for i, percent_overlaps in results:
+        overlap_matrix[i, :] = percent_overlaps
+        overlap_matrix[:, i] = percent_overlaps  # Symmetric matrix
+
+        # Ensure diagonal elements are 100%
+        overlap_matrix[i, i] = 100.0
+
+        # Update progress bar and timer
+        progress = (i + 1) / n
+        progress_bar.progress(progress)
+        elapsed_time = time.time() - start_time
+        progress_text.text(f'Calculating overlap: {i + 1}/{n} rows completed')
+        timer_text.text(f'Time elapsed: {elapsed_time:.2f} seconds')
+
+    return pd.DataFrame(overlap_matrix, index=df.index, columns=df.index)
+
+def visualize_overlap_matrix(overlap_matrix, title='Percent Overlap Matrix'):
+    """
+    Visualizes the overlap matrix using a heatmap.
+
+    Parameters:
+    overlap_matrix (pd.DataFrame): The percent overlap matrix to visualize.
+    title (str): Title of the heatmap.
+    """
+    plt.figure(figsize=(10, 8))
+    sns.heatmap(overlap_matrix, annot=False, cmap='viridis', cbar_kws={'label': 'Percent Overlap'})
+    plt.title(title)
+    plt.xlabel('Transition Index')
+    plt.ylabel('Transition Index')
+    st.pyplot(plt.gcf())
+      
 def main():
     st.set_page_config(layout="wide")
-    st.title('X-ray Absorption Spectrum Analysis')
+    st.title('StoBe Loader for Clustering Algorithm')
 
-    col1, col2, col3, col4, col5 = st.columns([2, 1, 1,1,1])
+    col1, col2, col3, col4, col5, col6, col7 = st.columns([2, 1, 1, 1, 1, 1, 1])
 
     with col1:
         directory = st.text_input('Enter the directory containing the output folders:')
     
     with col2:
-        width1 = st.number_input('Width 1 (eV)', min_value=0.01, max_value=20.0, value=1.0)/2.355
+        width1 = st.number_input('Width 1 (eV)', min_value=0.01, max_value=20.0, value=0.5)/2.355
     
     with col3:
-        width2 = st.number_input('Width 2 (eV)', min_value=0.01, max_value=20.0, value=1.0)/2.355
+        width2 = st.number_input('Width 2 (eV)', min_value=0.01, max_value=20.0, value=12.0)/2.355
         
     with col4:
-        maxEnergy = st.number_input('Maximum DFT Energy (eV)', min_value=0.0, max_value=1000.0, value=1.0)
-
+        maxEnergy = st.number_input('Maximum DFT Energy (eV)', min_value=0.0, max_value=1000.0, value=320.0)
+    
+    with col5:
+        molName = st.text_input('Enter the name of your molecule:')
+    
+    with col6:
+        OST = st.number_input('OS Threshold (%)', min_value=0.0, max_value=100.0, value=10.0)
+        
+    with col7:
+        OVPT = st.number_input('OVP Threshold (%)', min_value=0.0, max_value=100.0, value=50.0)
 
 
     if directory and st.button('Process Directory'):
@@ -550,11 +808,14 @@ def main():
                     showmol(view, height=400, width=400)
                 else:
                     st.write("No data available for the selected file.")
-                
-            st.write('### Combined Basis Sets Results')
-            st.dataframe(data['basis_sets'])
-            st.write('### Combined Energy Results')
-            st.dataframe(data['energy_results'])
+            
+            col1, col2 = st.columns([2, 3])
+            with col1:
+                st.write('### Combined Basis Sets Results')
+                st.dataframe(data['basis_sets'])
+            with col2:
+                st.write('### Combined Energy Results')
+                st.dataframe(data['energy_results'])
             
             # Display alfa and beta orbital dataframes next to one another
             col1, col2,col3 = st.columns([2, 2, 2])
@@ -572,14 +833,36 @@ def main():
                 st.dataframe(core_hole_homo_lumo_df)
             
             # Display X-ray Transitions Data and plot next to it
-            col1, col2 = st.columns([2, 3])
-            
+            st.write('### Initial X-ray Transitions Data')
+            col1, col2,col3,col4 = st.columns([1.5, 5, 3, 3])
             with col1:
-                st.write('### X-ray Transitions Data')
                 st.dataframe(data['xray_transitions'])
                 
             with col2:
-                plot_spectra(data['xray_transitions'], maxEnergy)
-
+                plot_individual_spectra(data['xray_transitions'], maxEnergy)
+            
+            with col3:
+                plot_total_spectra(data['xray_transitions'], maxEnergy, molName, 'OS')
+                
+            with col4:
+                plot_density_spectra(data['xray_transitions'],maxEnergy, 'OS')
+                
+            st.write('### Energy and OS Filtered X-ray Transitions')
+            col1, col2,col3 = st.columns([2, 2, 2])
+            with col1:
+                filtered_xray_transitions = filter_and_normalize_xray(data['xray_transitions'], maxEnergy, OST)
+                st.dataframe(filtered_xray_transitions)
+            with col2:
+                plot_total_spectra(filtered_xray_transitions, maxEnergy, molName, 'normalized_os',(OST/100)*2)
+            with col3:
+                plot_density_spectra(filtered_xray_transitions,maxEnergy,'normalized_os')
+            
+            st.write('### Overlap Matrix from Filtered Transitions')
+            col1, col2 = st.columns([2, 2])
+            percent_overlap_matrix = calculate_percent_overlap(filtered_xray_transitions,n_jobs=8)
+            with col1:
+                st.dataframe(percent_overlap_matrix,height=200 )
+            with col2:
+                visualize_overlap_matrix(percent_overlap_matrix)
 if __name__ == '__main__':
     main()
