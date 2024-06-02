@@ -9,17 +9,32 @@ import py3Dmol
 from stmol import showmol
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
-import matplotlib.colors as mcolors
 import numpy as np
 import seaborn as sns
 import plotly.graph_objects as go
 from scipy.integrate import quad
 import scipy.cluster.hierarchy as sch
-from scipy.cluster.hierarchy import linkage, fcluster, dendrogram
+from scipy.cluster.hierarchy import linkage, fcluster
 from scipy.spatial.distance import squareform
-from scipy.stats import norm
 from joblib import Parallel, delayed
+import zipfile
+import io
 
+def save_dataframe_to_csv_in_memory(dataframe, filename):
+    buffer = io.StringIO()
+    dataframe.to_csv(buffer, index=False)
+    buffer.seek(0)
+    return buffer
+
+def zip_dataframes(dataframes_dict, zip_filename):
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_DEFLATED) as zipf:
+        for name, df in dataframes_dict.items():
+            csv_buffer = save_dataframe_to_csv_in_memory(df, f"{name}.csv")
+            zipf.writestr(f"{name}.csv", csv_buffer.getvalue())
+    buffer.seek(0)
+    return buffer
+            
 def parse_basis_line(line):
     parts = line.split(':', 1)
     if len(parts) == 2:
@@ -1069,5 +1084,27 @@ def main():
             with col4:
                 st.write('### Original vs Clustered DFT NEXAFS')
                 plot_clustered_spectrum(final_df, data['xray_transitions'],maxEnergy)
+            
+            # Add a button to download all dataframes as CSV in a ZIP file
+            data_to_save = {
+                f"{molName}_basis_sets": data['basis_sets'],
+                f"{molName}_energy_results": data['energy_results'],
+                f"{molName}_orbital_alpha": data['orbital_alpha'],
+                f"{molName}_orbital_beta": data['orbital_beta'],
+                f"{molName}_xray_transitions": data['xray_transitions'],
+                f"{molName}_atomic_coordinates": data['atomic_coordinates'],
+                f"{molName}_final_df": final_df,
+                f"{molName}_core_hole_homo_lumo": core_hole_homo_lumo_df
+            }
+
+            zip_filename = f"{molName}_dataframes.zip"
+            zip_buffer = zip_dataframes(data_to_save, zip_filename)
+
+            st.download_button(
+                label="Download ZIP",
+                data=zip_buffer,
+                file_name=zip_filename,
+                mime='application/zip'
+            )
 if __name__ == '__main__':
     main()
