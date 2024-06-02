@@ -9,9 +9,14 @@ import py3Dmol
 from stmol import showmol
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
+import matplotlib.colors as mcolors
 import numpy as np
 import seaborn as sns
 from scipy.integrate import quad
+import scipy.cluster.hierarchy as sch
+from scipy.cluster.hierarchy import linkage, fcluster, dendrogram
+from scipy.spatial.distance import squareform
+from scipy.stats import norm
 from joblib import Parallel, delayed
 
 def parse_basis_line(line):
@@ -373,13 +378,14 @@ def dataframe_to_xyz(df, file_name="molecule.xyz"):
         f.write("\n".join(lines))
     print(f"XYZ file '{file_name}' created successfully.")
 
-def visualize_xyz_with_stmol(df, file_name):
+def visualize_xyz_with_stmol(df, file_name, label_size=14, bond_width=0.1, atom_scale=0.3):
     """
     Visualize an XYZ file using Stmol and py3Dmol.
     
     Parameters:
     df (pd.DataFrame): The DataFrame containing atomic coordinates and labels.
     file_name (str): The name of the XYZ file to read.
+    label_size (int): The font size for the labels.
     """
     # Read the XYZ file
     with open(file_name, 'r') as f:
@@ -388,7 +394,8 @@ def visualize_xyz_with_stmol(df, file_name):
     # Create a 3Dmol.js viewer
     view = py3Dmol.view(width=800, height=600)
     view.addModel(xyz_data, 'xyz')
-    view.setStyle({'stick': {}})
+    view.setStyle({'stick': {'radius': bond_width}, 'sphere': {'scale': atom_scale}})
+    view.setBackgroundColor('black')  # Set background color to black
     
     # Add labels based on the Atom column with atom numbers
     atom_counters = {}
@@ -399,7 +406,7 @@ def visualize_xyz_with_stmol(df, file_name):
         atom_counters[atom_symbol] += 1
         label = f"{atom_symbol}{atom_counters[atom_symbol]}"
         x, y, z = row['x'], row['y'], row['z']
-        view.addLabel(label, {'position': {'x': x, 'y': y, 'z': z}, 'backgroundColor': 'white', 'fontColor': 'black'})
+        view.addLabel(label, {'position': {'x': x, 'y': y, 'z': z}, 'backgroundColor': 'black', 'fontColor': 'white', 'fontSize': label_size})
     
     view.zoomTo()
     return view
@@ -513,7 +520,7 @@ def plot_total_spectra(xray_transitions, E_max, molName, os_col, os_ylim=1.0):
         total_spectrum += np.sum(gaussians, axis=1)
 
     # Plot the total spectrum
-    fig, ax1 = plt.subplots(figsize=(10, 8))
+    fig, ax1 = plt.subplots(figsize=(10, 10))
     ax1.plot(E_range, total_spectrum, label='Total Spectrum')
     ax1.set_xlabel('Energy (eV)')
     ax1.set_ylabel('Intensity')
@@ -596,7 +603,7 @@ def plot_density_spectra(xray_transitions,E_max,os_col):
     filtered_transitions = xray_transitions[xray_transitions['E'] < E_max]
     
     # Create the 2D KDE plot using seaborn
-    fig, ax = plt.subplots(figsize=(10, 8))
+    fig, ax = plt.subplots(figsize=(10, 10))
 
     # KDE plot with OSCL as weights
     sns.kdeplot(
@@ -663,17 +670,13 @@ def overlap_area(mu1, sigma1, amplitude1, mu2, sigma2, amplitude2):
 
 def calculate_percent_overlap(df, n_jobs=-1):
     """Calculates the percent overlap matrix for peaks in the dataframe."""
-    # Sort the dataframe by the 'E' column in ascending order
     df = df.sort_values(by='E').reset_index(drop=True)
-    
     n = len(df)
     overlap_matrix = np.zeros((n, n))
 
-    # Initialize Streamlit progress bar and timer
     progress_bar = st.progress(0)
     progress_text = st.empty()
     timer_text = st.empty()
-    parallel_timer_text = st.empty()
 
     mu = df['E'].values
     sigma = df['width'].values
@@ -681,50 +684,192 @@ def calculate_percent_overlap(df, n_jobs=-1):
 
     total_areas = gaussian_area(mu, sigma, amplitude)
 
-    start_time = time.time()  # Start the timer
+    start_time = time.time()
 
     def compute_overlap_row(i):
-        overlaps = np.array([overlap_area(mu[i], sigma[i], amplitude[i], mu[j], sigma[j], amplitude[j]) for j in range(n)])
-        percent_overlaps = (overlaps / np.minimum(total_areas[i], total_areas)) * 100
+        overlaps = np.array([overlap_area(mu[i], sigma[i], amplitude[i], mu[j], sigma[j], amplitude[j]) for j in range(i, n)])
+        percent_overlaps = (overlaps / np.minimum(total_areas[i], total_areas[i:])) * 100
         return i, percent_overlaps
 
-    # Measure time for parallel execution
-    parallel_start_time = time.time()
-    results = Parallel(n_jobs=n_jobs)(delayed(compute_overlap_row)(i) for i in range(n))
-    parallel_elapsed_time = time.time() - parallel_start_time
-    parallel_timer_text.text(f'Parallel execution time: {parallel_elapsed_time:.2f} seconds')
+    tasks = [delayed(compute_overlap_row)(i) for i in range(n)]
+    results = Parallel(n_jobs=n_jobs)(tasks)
 
     for i, percent_overlaps in results:
-        overlap_matrix[i, :] = percent_overlaps
-        overlap_matrix[:, i] = percent_overlaps  # Symmetric matrix
-
-        # Ensure diagonal elements are 100%
+        overlap_matrix[i, i:] = percent_overlaps
+        overlap_matrix[i:, i] = percent_overlaps  # Symmetric matrix
         overlap_matrix[i, i] = 100.0
 
-        # Update progress bar and timer
-        progress = (i + 1) / n
-        progress_bar.progress(progress)
-        elapsed_time = time.time() - start_time
-        progress_text.text(f'Calculating overlap: {i + 1}/{n} rows completed')
-        timer_text.text(f'Time elapsed: {elapsed_time:.2f} seconds')
+        if i % 10 == 0 or i == n - 1:
+            progress = (i + 1) / n
+            progress_bar.progress(progress)
+            elapsed_time = time.time() - start_time
+            progress_text.text(f'Calculating overlap: {i + 1}/{n} rows completed')
+            timer_text.text(f'Time elapsed: {elapsed_time:.2f} seconds')
 
     return pd.DataFrame(overlap_matrix, index=df.index, columns=df.index)
 
-def visualize_overlap_matrix(overlap_matrix, title='Percent Overlap Matrix'):
+def convert_to_distance_matrix(overlap_matrix):
+    """Converts an overlap matrix to a distance matrix."""
+    distance_matrix = 100 - overlap_matrix
+    return distance_matrix
+
+def hierarchical_clustering(overlap_matrix, threshold):
+    """Performs hierarchical clustering based on the overlap matrix."""
+    distance_matrix = convert_to_distance_matrix(overlap_matrix)
+    condensed_distance_matrix = squareform(distance_matrix)
+    Z = linkage(condensed_distance_matrix, method='ward')
+    
+    # Create clusters by cutting the dendrogram at a threshold
+    clusters = fcluster(Z, threshold, criterion='distance')
+    return clusters, Z
+
+def combine_transitions(df):
+    """Combines transitions within each cluster to form a representative Gaussian."""
+    combined_df = df.groupby('cluster').agg({
+        'E': 'mean',           # Mean position
+        'width': 'mean',       # Mean width
+        'OS': 'sum'            # Sum of amplitudes
+    }).reset_index()
+    return combined_df
+
+def iterative_clustering(df, overlap_threshold, max_iterations=10, n_jobs=-1):
+    """Iteratively clusters and combines transitions until no elements in the overlap matrix exceed the threshold."""
+    iteration = 0
+    while iteration < max_iterations:
+        percent_overlap_matrix = calculate_percent_overlap(df, n_jobs=n_jobs)
+        clusters, Z = hierarchical_clustering(percent_overlap_matrix, overlap_threshold)
+        df['cluster'] = clusters
+        combined_df = combine_transitions(df)
+        
+        max_overlap = percent_overlap_matrix.values[np.triu_indices(len(combined_df), k=1)].max()
+        if max_overlap <= overlap_threshold:
+            break
+        
+        df = combined_df.copy()
+        iteration += 1
+
+    return combined_df, percent_overlap_matrix, iteration, Z
+
+def visualize_overlap_matrix(overlap_matrix, threshold, title='Percent Overlap Matrix'):
     """
-    Visualizes the overlap matrix using a heatmap.
+    Visualizes the overlap matrix using a heatmap with a different color for values below a specified threshold.
 
     Parameters:
     overlap_matrix (pd.DataFrame): The percent overlap matrix to visualize.
+    threshold (float): The threshold for coloring values below it differently.
     title (str): Title of the heatmap.
     """
+    # Create a custom colormap based on the viridis colormap
+    cmap = sns.color_palette("viridis", as_cmap=True)
+
+    # Normalize the threshold value to the colormap range
+    norm = mcolors.Normalize(vmin=overlap_matrix.min().min(), vmax=overlap_matrix.max().max())
+    threshold_norm = norm(threshold)
+
+    # Create a new colormap that starts with the first color of the viridis colormap up to the threshold
+    colors = cmap(np.linspace(0, 1, 256))
+    colors[:int(threshold_norm * 256)] = colors[0]
+    custom_cmap = mcolors.ListedColormap(colors)
+
     plt.figure(figsize=(10, 8))
-    sns.heatmap(overlap_matrix, annot=False, cmap='viridis', cbar_kws={'label': 'Percent Overlap'})
+    sns.heatmap(overlap_matrix, annot=False, cmap=custom_cmap, cbar_kws={'label': 'Percent Overlap'})
     plt.title(title)
     plt.xlabel('Transition Index')
     plt.ylabel('Transition Index')
     st.pyplot(plt.gcf())
-      
+
+def generate_clusters(overlap_matrix, threshold):
+    """
+    Generates clusters from the overlap matrix using hierarchical clustering.
+
+    Parameters:
+    overlap_matrix (pd.DataFrame): The percent overlap matrix.
+    threshold (float): The threshold for clustering.
+
+    Returns:
+    np.ndarray: An array of cluster labels.
+    """
+    # Convert the overlap matrix to a condensed distance matrix
+    condensed_distance_matrix = squareform(1 - overlap_matrix.values / 100)
+
+    # Perform hierarchical/agglomerative clustering
+    linkage_matrix = sch.linkage(condensed_distance_matrix, method='complete')
+
+    # Generate cluster labels using the specified threshold
+    cluster_labels = sch.fcluster(linkage_matrix, t=threshold, criterion='distance')
+
+    return cluster_labels
+ 
+def visualize_clusters(overlap_matrix, cluster_labels, title='Clustered Overlap Matrix'):
+    """
+    Visualizes the clustered overlap matrix using a heatmap with clusters indicated.
+
+    Parameters:
+    overlap_matrix (pd.DataFrame): The percent overlap matrix to visualize.
+    cluster_labels (np.ndarray): Cluster labels for each transition.
+    title (str): Title of the heatmap.
+    """
+    plt.figure(figsize=(10, 8))
+    sns.heatmap(overlap_matrix, annot=False, cmap='viridis', cbar_kws={'label': 'Percent Overlap'})
+
+    # Add cluster borders
+    unique_clusters = np.unique(cluster_labels)
+    for cluster in unique_clusters:
+        indices = np.where(cluster_labels == cluster)[0]
+        for i in indices:
+            for j in indices:
+                plt.gca().add_patch(plt.Rectangle((j, i), 1, 1, fill=True, edgecolor='white', lw=2))
+
+    plt.title(title)
+    plt.xlabel('Transition Index')
+    plt.ylabel('Transition Index')
+    st.pyplot(plt.gcf())
+
+def plot_clustered_spectrum(df,original_df,Emax):
+    """
+    Plots the clustered spectrum and individual cluster peaks, along with the original transitions spectrum.
+
+    Args:
+        df (pd.DataFrame): DataFrame containing the clustered peak parameters.
+                           Columns should include 'mu', 'sigma', 'amplitude', and 'cluster'.
+        original_df (pd.DataFrame): DataFrame containing the original transitions.
+                           Columns should include 'mu', 'sigma', and 'amplitude'.
+    """
+    
+    x = np.linspace(original_df['E'].min() - 2, Emax, 2000)
+
+    plt.figure(figsize=(10, 8))
+
+    # Function to calculate the Gaussian for multiple rows at once
+    def calculate_gaussian_spectrum(E_range, E_values, width_values, amplitude_values):
+        E_range_2D = E_range[:, np.newaxis]
+        gaussians = (amplitude_values / (width_values * np.sqrt(2 * np.pi))) * \
+                    np.exp(-((E_range_2D - E_values) ** 2) / (2 * width_values ** 2))
+        return np.sum(gaussians, axis=1)
+
+    # Plot each cluster and add to the total spectrum
+    clusters = df['cluster'].unique()
+    total_spectrum = np.zeros_like(x)
+
+    for cluster in clusters:
+        cluster_df = df[df['cluster'] == cluster]
+        cluster_spectrum = calculate_gaussian_spectrum(x, cluster_df['E'].values, cluster_df['width'].values, cluster_df['OS'].values)
+        total_spectrum += cluster_spectrum
+        plt.plot(x, cluster_spectrum, label=f'Cluster {cluster}')
+
+    # Plot the total clustered spectrum
+    plt.plot(x, total_spectrum, label='Total Clustered Spectrum', color='black', linewidth=2)
+
+    # Plot the original transitions
+    original_spectrum = calculate_gaussian_spectrum(x, original_df['E'].values, original_df['width'].values, original_df['OS'].values)
+    plt.plot(x, original_spectrum, label='Total Original Spectrum', color='blue', linewidth=2, linestyle='--')
+
+    plt.xlabel('Energy')
+    plt.ylabel('Intensity')
+    plt.title('Clustered DFT NEXAFS vs Original DFT NEXAFS')
+    plt.legend()
+    st.pyplot(plt)
+    
 def main():
     st.set_page_config(layout="wide")
     st.title('StoBe Loader for Clustering Algorithm')
@@ -786,12 +931,13 @@ def main():
             
             
             # Display Atomic Coordinates and Molecule Visualization side by side
-            st.write('### Atomic Coordinates and Molecule Visualization')
-            col1,col2  = st.columns([2,2])
+            col1,col2,col3  = st.columns([3,2,3])
             with col1:
+                st.write('### Atomic Coordinates')
                 st.dataframe(atomic_coordinates)
             
             with col2:
+                st.write('### Molecule Visualization')
                 # Dropdown menu to filter based on Originating File
                 unique_file = atomic_coordinates['Originating File'].unique()[0]
                 #selected_file = st.selectbox('Select Originating File:', unique_files)
@@ -808,61 +954,68 @@ def main():
                     showmol(view, height=400, width=400)
                 else:
                     st.write("No data available for the selected file.")
-            
-            col1, col2 = st.columns([2, 3])
-            with col1:
-                st.write('### Combined Basis Sets Results')
-                st.dataframe(data['basis_sets'])
-            with col2:
-                st.write('### Combined Energy Results')
-                st.dataframe(data['energy_results'])
-            
-            # Display alfa and beta orbital dataframes next to one another
-            col1, col2,col3 = st.columns([2, 2, 2])
-            with col1:
-                st.write('### Orbital Alpha Data')
-                st.dataframe(data['orbital_alpha'])
-            with col2:
-                st.write('### Orbital Beta Data')
-                st.dataframe(data['orbital_beta'])
-                
-            # Finding Core Hole, HOMO and LUMO
-            core_hole_homo_lumo_df = find_core_hole_homo_lumo(data['orbital_alpha'])
             with col3:
-                st.write('### Core Hole, HOMO, and LUMO Results')
+                st.write('### Basis Sets')
+                st.dataframe(data['basis_sets'])
+            
+            col1, col2,col3,col4 = st.columns([3, 2, 2, 2])
+            with col1:
+                st.write('### Molecule Energies')
+                st.dataframe(data['energy_results'])
+            with col2:
+                st.write('### Orbital Alpha')
+                st.dataframe(data['orbital_alpha'])
+            with col3:
+                st.write('### Orbital Beta')
+                st.dataframe(data['orbital_beta'])
+            with col4:
+                core_hole_homo_lumo_df = find_core_hole_homo_lumo(data['orbital_alpha'])
+                st.write('### Core Hole, HOMO, and LUMO')
                 st.dataframe(core_hole_homo_lumo_df)
             
             # Display X-ray Transitions Data and plot next to it
-            st.write('### Initial X-ray Transitions Data')
-            col1, col2,col3,col4 = st.columns([1.5, 5, 3, 3])
+            col1, col2,col3,col4 = st.columns([3, 6, 3, 3])
             with col1:
+                st.write('### Initial X-ray Transitions')
                 st.dataframe(data['xray_transitions'])
-                
             with col2:
+                st.write('### Excitation Centers DFT NEXAFS')
                 plot_individual_spectra(data['xray_transitions'], maxEnergy)
-            
             with col3:
+                st.write('### Initial DFT NEXAFS')
                 plot_total_spectra(data['xray_transitions'], maxEnergy, molName, 'OS')
-                
             with col4:
+                ('### Initial KDE')
                 plot_density_spectra(data['xray_transitions'],maxEnergy, 'OS')
                 
-            st.write('### Energy and OS Filtered X-ray Transitions')
-            col1, col2,col3 = st.columns([2, 2, 2])
+            col1, col2,col3 = st.columns([5, 2, 2])
             with col1:
+                st.write('### Energy and OS Filtered X-ray Transitions')
                 filtered_xray_transitions = filter_and_normalize_xray(data['xray_transitions'], maxEnergy, OST)
                 st.dataframe(filtered_xray_transitions)
             with col2:
+                st.write('### Energy and OS Filtered DFT NEXAFS')
                 plot_total_spectra(filtered_xray_transitions, maxEnergy, molName, 'normalized_os',(OST/100)*2)
             with col3:
+                st.write('### Energy and OS Filtered KDE')
                 plot_density_spectra(filtered_xray_transitions,maxEnergy,'normalized_os')
             
-            st.write('### Overlap Matrix from Filtered Transitions')
-            col1, col2 = st.columns([2, 2])
-            percent_overlap_matrix = calculate_percent_overlap(filtered_xray_transitions,n_jobs=8)
+            st.write('### Clustering the DFT Transitions')
+            col1, col2, col3, col4 = st.columns([2, 2, 2, 2])
+            final_df, final_overlap_matrix, iterations, Z = iterative_clustering(filtered_xray_transitions, OVPT, n_jobs=8)
+            # Display results
             with col1:
-                st.dataframe(percent_overlap_matrix,height=200 )
+                st.write(f'Final Clusters after {iterations} iterations:')
+                st.write(final_df)
             with col2:
-                visualize_overlap_matrix(percent_overlap_matrix)
+                st.write('Final Percent Overlap Matrix:')
+                st.write(final_overlap_matrix)
+            with col3:
+                # Optionally, plot the dendrogram
+                fig, ax = plt.subplots(figsize=(10, 8))
+                dendrogram(Z, ax=ax)
+                st.pyplot(fig)
+            with col4:
+                plot_clustered_spectrum(final_df, data['xray_transitions'],maxEnergy)
 if __name__ == '__main__':
     main()
