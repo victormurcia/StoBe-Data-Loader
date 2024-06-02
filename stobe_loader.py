@@ -724,28 +724,46 @@ def hierarchical_clustering(overlap_matrix, threshold):
     return clusters, Z
 
 def combine_transitions(df):
-    """Combines transitions within each cluster to form a representative Gaussian."""
-    combined_df = df.groupby('cluster').agg({
-        'E': 'mean',           # Mean position
-        'width': 'mean',       # Mean width
-        'OS': 'sum'            # Sum of amplitudes
-    }).reset_index()
+    """Combines transitions within each cluster to form a representative Gaussian using weighted averages for E and a custom formula for width."""
+    def weighted_average(group, avg_name, weight_name):
+        """Calculate the weighted average."""
+        d = group[avg_name]
+        w = group[weight_name]
+        return (d * w).sum() / w.sum()
+    
+    def weighted_width(group, E_weighted):
+        """Calculate the weighted width."""
+        width_contrib = ((group['width'] + group['E']) * group['OS']).sum()
+        return (width_contrib / group['OS'].sum()) - E_weighted
+    
+    combined_df = df.groupby('cluster').apply(
+        lambda x: pd.Series({
+            'E': weighted_average(x, 'E', 'OS'),
+            'width': weighted_width(x, weighted_average(x, 'E', 'OS')),
+            'OS': x['OS'].max()
+        })
+    ).reset_index()
+    
     return combined_df
 
 def iterative_clustering(df, overlap_threshold, max_iterations=10, n_jobs=-1):
     """Iteratively clusters and combines transitions until no elements in the overlap matrix exceed the threshold."""
     iteration = 0
+    percent_overlap_matrix = calculate_percent_overlap(df, n_jobs=n_jobs)
+    clusters, Z = hierarchical_clustering(percent_overlap_matrix, overlap_threshold)
+    df['cluster'] = clusters
+    combined_df = combine_transitions(df)
+
     while iteration < max_iterations:
-        percent_overlap_matrix = calculate_percent_overlap(df, n_jobs=n_jobs)
+        percent_overlap_matrix = calculate_percent_overlap(combined_df, n_jobs=n_jobs)
         clusters, Z = hierarchical_clustering(percent_overlap_matrix, overlap_threshold)
-        df['cluster'] = clusters
-        combined_df = combine_transitions(df)
+        combined_df['cluster'] = clusters
+        combined_df = combine_transitions(combined_df)
         
         max_overlap = percent_overlap_matrix.values[np.triu_indices(len(combined_df), k=1)].max()
         if max_overlap <= overlap_threshold:
             break
         
-        df = combined_df.copy()
         iteration += 1
 
     return combined_df, percent_overlap_matrix, iteration, Z
@@ -809,7 +827,7 @@ def visualize_clusters(overlap_matrix, cluster_labels, title='Clustered Overlap 
     cluster_labels (np.ndarray): Cluster labels for each transition.
     title (str): Title of the heatmap.
     """
-    plt.figure(figsize=(10, 8))
+    plt.figure(figsize=(10, 4))
     sns.heatmap(overlap_matrix, annot=False, cmap='viridis', cbar_kws={'label': 'Percent Overlap'})
 
     # Add cluster borders
@@ -838,7 +856,7 @@ def plot_clustered_spectrum(df,original_df,Emax):
     
     x = np.linspace(original_df['E'].min() - 2, Emax, 2000)
 
-    plt.figure(figsize=(10, 8))
+    plt.figure(figsize=(10, 6))
 
     # Function to calculate the Gaussian for multiple rows at once
     def calculate_gaussian_spectrum(E_range, E_values, width_values, amplitude_values):
@@ -869,6 +887,14 @@ def plot_clustered_spectrum(df,original_df,Emax):
     plt.title('Clustered DFT NEXAFS vs Original DFT NEXAFS')
     plt.legend()
     st.pyplot(plt)
+
+def plot_dendrogram(Z, title="Dendrogram", xlabel="Sample Index", ylabel="Distance"):
+    fig, ax = plt.subplots(figsize=(10, 6))
+    dendrogram(Z, ax=ax)
+    ax.set_title(title)
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    st.pyplot(fig)
     
 def main():
     st.set_page_config(layout="wide")
@@ -1001,7 +1027,7 @@ def main():
                 plot_density_spectra(filtered_xray_transitions,maxEnergy,'normalized_os')
             
             st.write('### Clustering the DFT Transitions')
-            col1, col2, col3, col4 = st.columns([2, 2, 2, 2])
+            col1, col2, col3, col4 = st.columns([1, 1, 2, 2])
             final_df, final_overlap_matrix, iterations, Z = iterative_clustering(filtered_xray_transitions, OVPT, n_jobs=8)
             # Display results
             with col1:
@@ -1011,11 +1037,11 @@ def main():
                 st.write('Final Percent Overlap Matrix:')
                 st.write(final_overlap_matrix)
             with col3:
+                st.write('### Dendrogram for Clusters')
                 # Optionally, plot the dendrogram
-                fig, ax = plt.subplots(figsize=(10, 8))
-                dendrogram(Z, ax=ax)
-                st.pyplot(fig)
+                plot_dendrogram(Z, title="Cluster Dendrogram", xlabel="Cluster Index", ylabel="Euclidean Distance")
             with col4:
+                st.write('### Original vs Clustered DFT NEXAFS')
                 plot_clustered_spectrum(final_df, data['xray_transitions'],maxEnergy)
 if __name__ == '__main__':
     main()
