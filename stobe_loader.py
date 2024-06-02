@@ -12,6 +12,7 @@ from matplotlib.lines import Line2D
 import matplotlib.colors as mcolors
 import numpy as np
 import seaborn as sns
+import plotly.graph_objects as go
 from scipy.integrate import quad
 import scipy.cluster.hierarchy as sch
 from scipy.cluster.hierarchy import linkage, fcluster, dendrogram
@@ -744,6 +745,12 @@ def combine_transitions(df):
         })
     ).reset_index()
     
+    # Sort by the 'E' column
+    combined_df = combined_df.sort_values(by='E').reset_index(drop=True)
+    
+    # Reassign clusters in sequential order
+    combined_df['cluster'] = np.arange(1, len(combined_df) + 1)
+    
     return combined_df
 
 def iterative_clustering(df, overlap_threshold, max_iterations=10, n_jobs=-1):
@@ -768,33 +775,31 @@ def iterative_clustering(df, overlap_threshold, max_iterations=10, n_jobs=-1):
 
     return combined_df, percent_overlap_matrix, iteration, Z
 
-def visualize_overlap_matrix(overlap_matrix, threshold, title='Percent Overlap Matrix'):
+def visualize_overlap_matrix(overlap_matrix, title='Percent Overlap Matrix'):
     """
     Visualizes the overlap matrix using a heatmap with a different color for values below a specified threshold.
 
     Parameters:
     overlap_matrix (pd.DataFrame): The percent overlap matrix to visualize.
-    threshold (float): The threshold for coloring values below it differently.
     title (str): Title of the heatmap.
     """
-    # Create a custom colormap based on the viridis colormap
-    cmap = sns.color_palette("viridis", as_cmap=True)
+    fig = go.Figure(data=go.Heatmap(
+        z=overlap_matrix.values,
+        x=overlap_matrix.columns,
+        y=overlap_matrix.index,
+        colorscale='Viridis',
+        colorbar=dict(title='Percent Overlap')
+    ))
 
-    # Normalize the threshold value to the colormap range
-    norm = mcolors.Normalize(vmin=overlap_matrix.min().min(), vmax=overlap_matrix.max().max())
-    threshold_norm = norm(threshold)
+    fig.update_layout(
+        #title=title,
+        xaxis_title='Transition Index',
+        yaxis_title='Transition Index',
+        width=500,
+        height=500
+    )
 
-    # Create a new colormap that starts with the first color of the viridis colormap up to the threshold
-    colors = cmap(np.linspace(0, 1, 256))
-    colors[:int(threshold_norm * 256)] = colors[0]
-    custom_cmap = mcolors.ListedColormap(colors)
-
-    plt.figure(figsize=(10, 8))
-    sns.heatmap(overlap_matrix, annot=False, cmap=custom_cmap, cbar_kws={'label': 'Percent Overlap'})
-    plt.title(title)
-    plt.xlabel('Transition Index')
-    plt.ylabel('Transition Index')
-    st.pyplot(plt.gcf())
+    st.plotly_chart(fig)
 
 def generate_clusters(overlap_matrix, threshold):
     """
@@ -843,20 +848,18 @@ def visualize_clusters(overlap_matrix, cluster_labels, title='Clustered Overlap 
     plt.ylabel('Transition Index')
     st.pyplot(plt.gcf())
 
-def plot_clustered_spectrum(df,original_df,Emax):
+def plot_clustered_spectrum(df, original_df, Emax):
     """
     Plots the clustered spectrum and individual cluster peaks, along with the original transitions spectrum.
 
     Args:
         df (pd.DataFrame): DataFrame containing the clustered peak parameters.
-                           Columns should include 'mu', 'sigma', 'amplitude', and 'cluster'.
+                           Columns should include 'E', 'width', 'OS', and 'cluster'.
         original_df (pd.DataFrame): DataFrame containing the original transitions.
-                           Columns should include 'mu', 'sigma', and 'amplitude'.
+                           Columns should include 'E', 'width', and 'OS'.
     """
     
     x = np.linspace(original_df['E'].min() - 2, Emax, 2000)
-
-    plt.figure(figsize=(10, 6))
 
     # Function to calculate the Gaussian for multiple rows at once
     def calculate_gaussian_spectrum(E_range, E_values, width_values, amplitude_values):
@@ -869,32 +872,53 @@ def plot_clustered_spectrum(df,original_df,Emax):
     clusters = df['cluster'].unique()
     total_spectrum = np.zeros_like(x)
 
+    fig = go.Figure()
+
     for cluster in clusters:
         cluster_df = df[df['cluster'] == cluster]
         cluster_spectrum = calculate_gaussian_spectrum(x, cluster_df['E'].values, cluster_df['width'].values, cluster_df['OS'].values)
         total_spectrum += cluster_spectrum
-        plt.plot(x, cluster_spectrum, label=f'Cluster {cluster}')
+        fig.add_trace(go.Scatter(x=x, y=cluster_spectrum, mode='lines', name=f'Cluster {cluster}'))
 
     # Plot the total clustered spectrum
-    plt.plot(x, total_spectrum, label='Total Clustered Spectrum', color='black', linewidth=2)
+    fig.add_trace(go.Scatter(x=x, y=total_spectrum, mode='lines', name='Total Clustered Spectrum', line=dict(color='black', width=2)))
 
     # Plot the original transitions
     original_spectrum = calculate_gaussian_spectrum(x, original_df['E'].values, original_df['width'].values, original_df['OS'].values)
-    plt.plot(x, original_spectrum, label='Total Original Spectrum', color='blue', linewidth=2, linestyle='--')
+    fig.add_trace(go.Scatter(x=x, y=original_spectrum, mode='lines', name='Total Original Spectrum', line=dict(color='blue', width=2, dash='dash')))
 
-    plt.xlabel('Energy')
-    plt.ylabel('Intensity')
-    plt.title('Clustered DFT NEXAFS vs Original DFT NEXAFS')
-    plt.legend()
-    st.pyplot(plt)
+    fig.update_layout(
+        #title='Clustered DFT NEXAFS vs Original DFT NEXAFS',
+        xaxis_title='Energy',
+        yaxis_title='Intensity',
+        legend_title='Spectra',
+        template='plotly_white',
+        width=600,
+        height=500,
+    )
+
+    st.plotly_chart(fig)
+
+import plotly.figure_factory as ff
 
 def plot_dendrogram(Z, title="Dendrogram", xlabel="Sample Index", ylabel="Distance"):
-    fig, ax = plt.subplots(figsize=(10, 6))
-    dendrogram(Z, ax=ax)
-    ax.set_title(title)
-    ax.set_xlabel(xlabel)
-    ax.set_ylabel(ylabel)
-    st.pyplot(fig)
+    # Create the dendrogram
+    fig = ff.create_dendrogram(Z, orientation='top')
+    
+    # Invert the y-axis
+    fig.update_yaxes(autorange="reversed")
+    
+    # Update layout
+    fig.update_layout(
+        #title=title,
+        xaxis_title=xlabel,
+        yaxis_title=ylabel,
+        width=600,
+        height=500,
+        template='plotly_white'
+    )
+    
+    st.plotly_chart(fig)
     
 def main():
     st.set_page_config(layout="wide")
@@ -1027,15 +1051,17 @@ def main():
                 plot_density_spectra(filtered_xray_transitions,maxEnergy,'normalized_os')
             
             st.write('### Clustering the DFT Transitions')
-            col1, col2, col3, col4 = st.columns([1, 1, 2, 2])
+            col1, col2, col3, col4 = st.columns([1, 2, 2, 2])
             final_df, final_overlap_matrix, iterations, Z = iterative_clustering(filtered_xray_transitions, OVPT, n_jobs=8)
             # Display results
             with col1:
+                st.write('### Cluster Parameters')
                 st.write(f'Final Clusters after {iterations} iterations:')
                 st.write(final_df)
             with col2:
-                st.write('Final Percent Overlap Matrix:')
-                st.write(final_overlap_matrix)
+                st.write('### Overlap Matrix')
+                #st.write(final_overlap_matrix)
+                visualize_overlap_matrix(final_overlap_matrix, title='Percent Overlap Matrix')
             with col3:
                 st.write('### Dendrogram for Clusters')
                 # Optionally, plot the dendrogram
