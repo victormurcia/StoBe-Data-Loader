@@ -48,5 +48,5 @@ streamlit run stobe_loader.py
 
 ![OVP Threshold](img/6.PNG)
 
-![Clustering](img/7.PNG)
+![Clustering](img/8.PNG)
 
