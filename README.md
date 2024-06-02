@@ -33,5 +33,17 @@ streamlit run stobe_loader.py
 
 5. Set the desired values for the energy dependent broadening scheme using the Width 1, Width 2 and Maximum DFT Energy input boxes. The default values work very well for the Carbon edge NEXAFS.
 6. Set the name of your molecule.
-7. For the Clustering Algorithm, set an oscillator strength threshold using the given input box
-8. OVP Threshold not implemented yet.
+7. For the Clustering Algorithm, set an oscillator strength threshold and an overlap threshold using the given input boxes
+8. There is an initial version of a clustering algorithm included but it is nowhere near as robust as the IGOR implementation at the moment.  
+
+## Screenshots of App
+
+![Loading Function](img/2.PNG)
+
+![Energy Broadening Scheme](img/3.PNG)
+
+![Molecule Name](img/4.PNG)
+
+![Oscillator Strength Threshold](img/5.PNG)
+
+![OVP Threshold](img/6.PNG)
