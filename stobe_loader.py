@@ -21,8 +21,19 @@ import plotly.figure_factory as ff
 import plotly.colors
 from zipfile import ZipFile
 from io import BytesIO
+import plotly.express as px
             
 def parse_basis_line(line):
+    """
+    Parses a line of text to extract the atom and basis set information.
+
+    Args:
+        line (str): A string containing the atom and basis set information in the format "Atom: Basis".
+
+    Returns:
+        tuple: A tuple containing the atom (str) and the basis (str). 
+               If the line does not contain both atom and basis set information, returns (None, None).
+    """
     parts = line.split(':', 1)
     if len(parts) == 2:
         atom = parts[0].split()[-1]
@@ -218,12 +229,40 @@ def extract_all_information(file_path, originating_atom):
 
 
 def sort_dataframe_naturally(df, column):
+    """
+    Sorts a DataFrame naturally by the specified column.
+
+    Natural sorting orders numbers in the way humans expect, e.g., 1, 2, 10 instead of 1, 10, 2.
+
+    Args:
+        df (pd.DataFrame): The DataFrame to be sorted.
+        column (str): The column name to sort by.
+
+    Returns:
+        pd.DataFrame: The sorted DataFrame.
+    """
     df[column] = df[column].astype(str)
     sorted_index = natsorted(df[column].tolist())
     df = df.set_index(column).loc[sorted_index].reset_index()
     return df
 
 def process_file(file_info):
+    """
+    Processes a file to extract various pieces of information and combine them into DataFrames.
+
+    Args:
+        file_info (tuple): A tuple containing an entry (str) and a file path (str).
+
+    Returns:
+        tuple: A tuple containing the following DataFrames:
+            - df_combined (pd.DataFrame): Combined DataFrame of auxiliary, orbital, and model information.
+            - df_energies (pd.DataFrame): DataFrame containing energy information.
+            - df_alpha (pd.DataFrame): DataFrame containing alpha information.
+            - df_beta (pd.DataFrame): DataFrame containing beta information.
+            - df_xray_transitions (pd.DataFrame): DataFrame containing x-ray transitions information.
+            - df_atomic_coordinates (pd.DataFrame): DataFrame containing atomic coordinates.
+        If an error occurs during processing, returns None.
+    """
     try:
         entry, file_path = file_info
         originating_atom = entry
@@ -246,6 +285,27 @@ def process_file(file_info):
     return df_combined, df_energies, df_alpha, df_beta, df_xray_transitions, df_atomic_coordinates
 
 def process_directory(directory, progress_bar, progress_text, width1, width2, ewid1, ewid2):
+    """
+    Processes all files in a directory to extract and combine various pieces of information into DataFrames.
+
+    Args:
+        directory (str): The path to the directory containing subdirectories with files to process.
+        progress_bar (st.progress): A Streamlit progress bar widget to display progress.
+        progress_text (st.text): A Streamlit text widget to display progress text.
+        width1 (float): The width value used in the broadening function for energy values below ewid1.
+        width2 (float): The width value used in the broadening function for energy values above ewid2.
+        ewid1 (float): The lower threshold energy value for broadening.
+        ewid2 (float): The upper threshold energy value for broadening.
+
+    Returns:
+        tuple: A tuple containing the following DataFrames:
+            - combined_results (pd.DataFrame): Combined DataFrame of auxiliary, orbital, and model information.
+            - energy_results (pd.DataFrame): DataFrame containing energy information.
+            - orbital_alpha (pd.DataFrame): DataFrame containing alpha orbital information.
+            - orbital_beta (pd.DataFrame): DataFrame containing beta orbital information.
+            - xray_transitions (pd.DataFrame): DataFrame containing x-ray transitions information.
+            - atomic_coordinates (pd.DataFrame): DataFrame containing atomic coordinates.
+    """
     combined_results_list = []
     energy_results_list = []
     orbital_alpha_list = []
@@ -313,6 +373,15 @@ def process_directory(directory, progress_bar, progress_text, width1, width2, ew
             xray_transitions = df
     
     def broad(E):
+        """
+        Determines the broadening width based on the energy value.
+
+        Args:
+            E (float): The energy value.
+
+        Returns:
+            float: The calculated width based on the energy value.
+        """
         if E < ewid1:
             return width1
         elif E > ewid2:
@@ -561,6 +630,18 @@ def plot_total_spectra(xray_transitions, E_max, molName, os_col, os_ylim=1.0):
     st.pyplot(fig)
     
 def find_core_hole_homo_lumo(orbital_alpha):
+    """
+    Identifies the Core Hole, Highest Occupied Molecular Orbital (HOMO), and Lowest Unoccupied Molecular Orbital (LUMO)
+    for each unique Atom and Originating File in the given DataFrame.
+
+    Args:
+        orbital_alpha (pd.DataFrame): A DataFrame containing orbital information with columns 'Atom', 'Originating File',
+                                      'Occup.', and 'MO_Index'.
+
+    Returns:
+        pd.DataFrame: A DataFrame with columns 'Atom', 'File', 'Core Hole', 'HOMO', and 'LUMO', containing the 
+                      identified core hole, HOMO, and LUMO for each unique atom and originating file.
+    """
     results = []
     
     # Convert Occup. column to float
@@ -655,15 +736,49 @@ def filter_and_normalize_xray(df, maxE, OST):
     return df_filtered
 
 def gaussian(x, mu, sigma, amplitude):
-    """Returns the value of a Gaussian function."""
+    """
+    Calculates the value of a Gaussian function for given input parameters.
+
+    Args:
+        x (float or np.ndarray): The input value(s) where the Gaussian function is evaluated.
+        mu (float): The mean (center) of the Gaussian function.
+        sigma (float): The standard deviation (width) of the Gaussian function.
+        amplitude (float): The amplitude (height) of the Gaussian function.
+
+    Returns:
+        float or np.ndarray: The value(s) of the Gaussian function at the given input x.
+    """
     return amplitude * np.exp(-((x - mu) ** 2) / (2 * sigma ** 2))
 
 def gaussian_area(mu, sigma, amplitude):
-    """Returns the area under a Gaussian function."""
+    """
+    Calculates the area under a Gaussian function.
+
+    Args:
+        mu (float): The mean (center) of the Gaussian function (not used in the calculation).
+        sigma (float): The standard deviation (width) of the Gaussian function.
+        amplitude (float): The amplitude (height) of the Gaussian function.
+
+    Returns:
+        float: The area under the Gaussian function.
+    """
     return amplitude * sigma * np.sqrt(2 * np.pi)
 
 def overlap_area(mu1, sigma1, amplitude1, mu2, sigma2, amplitude2):
-    """Calculates the overlap area between two Gaussian peaks."""
+    """
+    Calculates the overlap area between two Gaussian peaks.
+
+    Args:
+        mu1 (float): The mean (center) of the first Gaussian function.
+        sigma1 (float): The standard deviation (width) of the first Gaussian function.
+        amplitude1 (float): The amplitude (height) of the first Gaussian function.
+        mu2 (float): The mean (center) of the second Gaussian function.
+        sigma2 (float): The standard deviation (width) of the second Gaussian function.
+        amplitude2 (float): The amplitude (height) of the second Gaussian function.
+
+    Returns:
+        float: The overlap area between the two Gaussian functions.
+    """
     integrand = lambda x: np.minimum(gaussian(x, mu1, sigma1, amplitude1), gaussian(x, mu2, sigma2, amplitude2))
     # Integrate over a range wide enough to cover both peaks
     lower_bound = min(mu1 - 3 * sigma1, mu2 - 3 * sigma2)
@@ -672,7 +787,17 @@ def overlap_area(mu1, sigma1, amplitude1, mu2, sigma2, amplitude2):
     return overlap
 
 def calculate_percent_overlap(df, n_jobs=-1):
-    """Calculates the percent overlap matrix for peaks in the dataframe."""
+    """
+    Calculates the percent overlap matrix for peaks in the DataFrame.
+
+    Args:
+        df (pd.DataFrame): A DataFrame containing the columns 'E' (energy), 'width', and 'OS' (oscillator strength).
+        n_jobs (int): The number of parallel jobs to run. Defaults to -1 (use all available processors).
+
+    Returns:
+        pd.DataFrame: A DataFrame representing the percent overlap matrix, where each element (i, j) is the percent overlap
+                      between the peaks at index i and index j.
+    """
     df = df.sort_values(by='E').reset_index(drop=True)
     n = len(df)
     overlap_matrix = np.zeros((n, n))
@@ -712,12 +837,30 @@ def calculate_percent_overlap(df, n_jobs=-1):
     return pd.DataFrame(overlap_matrix, index=df.index, columns=df.index)
 
 def convert_to_distance_matrix(overlap_matrix):
-    """Converts an overlap matrix to a distance matrix."""
+    """
+    Converts an overlap matrix to a distance matrix.
+
+    Args:
+        overlap_matrix (pd.DataFrame or np.ndarray): A square matrix representing the overlap percentages.
+
+    Returns:
+        pd.DataFrame or np.ndarray: A square matrix representing the distance, calculated as 100 - overlap.
+    """
     distance_matrix = 100 - overlap_matrix
     return distance_matrix
 
 def hierarchical_clustering(overlap_matrix, threshold):
-    """Performs hierarchical clustering based on the overlap matrix."""
+    """
+    Performs hierarchical clustering based on the overlap matrix.
+
+    Args:
+        overlap_matrix (pd.DataFrame or np.ndarray): A square matrix representing the overlap percentages.
+        threshold (float): The distance threshold for forming clusters. Clusters are formed by cutting the dendrogram at this threshold.
+
+    Returns:
+        np.ndarray: An array of cluster labels for each element.
+        np.ndarray: The hierarchical clustering encoded as a linkage matrix.
+    """
     distance_matrix = convert_to_distance_matrix(overlap_matrix)
     condensed_distance_matrix = squareform(distance_matrix)
     Z = linkage(condensed_distance_matrix, method='ward')
@@ -727,15 +870,42 @@ def hierarchical_clustering(overlap_matrix, threshold):
     return clusters, Z
 
 def combine_transitions(df):
-    """Combines transitions within each cluster to form a representative Gaussian using weighted averages for E and a custom formula for width."""
+    """
+    Combines transitions within each cluster to form a representative Gaussian using weighted averages for E and a custom formula for width.
+
+    Args:
+        df (pd.DataFrame): A DataFrame containing transition data with columns 'cluster', 'E', 'width', and 'OS'.
+
+    Returns:
+        pd.DataFrame: A DataFrame with combined transitions, containing columns 'cluster', 'E', 'width', and 'OS'.
+    """
     def weighted_average(group, avg_name, weight_name):
-        """Calculate the weighted average."""
+        """
+        Calculate the weighted average.
+
+        Args:
+            group (pd.DataFrame): The group of rows for which to calculate the weighted average.
+            avg_name (str): The name of the column to average.
+            weight_name (str): The name of the column to use as weights.
+
+        Returns:
+            float: The weighted average.
+        """
         d = group[avg_name]
         w = group[weight_name]
         return (d * w).sum() / w.sum()
     
     def weighted_width(group, E_weighted):
-        """Calculate the weighted width."""
+        """
+        Calculate the weighted width.
+
+        Args:
+            group (pd.DataFrame): The group of rows for which to calculate the weighted width.
+            E_weighted (float): The weighted average of the energy values.
+
+        Returns:
+            float: The weighted width.
+        """
         width_contrib = ((group['width'] + group['E']) * group['OS']).sum()
         return (width_contrib / group['OS'].sum()) - E_weighted
     
@@ -756,26 +926,50 @@ def combine_transitions(df):
     return combined_df
 
 def iterative_clustering(df, overlap_threshold, max_iterations=10, n_jobs=-1):
-    """Iteratively clusters and combines transitions until no elements in the overlap matrix exceed the threshold."""
-    iteration = 0
+    """
+    Iteratively clusters and combines transitions until no elements in the overlap matrix exceed the threshold.
+    
+    Args:
+        df (pd.DataFrame): DataFrame containing the transition data.
+        overlap_threshold (float): Threshold for the maximum allowable overlap between clusters.
+        max_iterations (int): Maximum number of iterations for the clustering process.
+        n_jobs (int): Number of jobs to run in parallel for calculating the overlap matrix.
+    
+    Returns:
+        combined_df (pd.DataFrame): DataFrame with the final clustered transitions.
+        percent_overlap_matrix (pd.DataFrame): DataFrame with the final percent overlap matrix.
+        iteration (int): Number of iterations performed.
+        final_Z (ndarray): Linkage matrix from the final hierarchical clustering.
+    """
+    iteration = 1
     percent_overlap_matrix = calculate_percent_overlap(df, n_jobs=n_jobs)
     clusters, Z = hierarchical_clustering(percent_overlap_matrix, overlap_threshold)
     df['cluster'] = clusters
     combined_df = combine_transitions(df)
+    final_Z = Z
 
     while iteration < max_iterations:
         percent_overlap_matrix = calculate_percent_overlap(combined_df, n_jobs=n_jobs)
         clusters, Z = hierarchical_clustering(percent_overlap_matrix, overlap_threshold)
-        combined_df['cluster'] = clusters
+        
+        # Enforce the desired number of clusters
+        final_clusters = fcluster(Z, t=overlap_threshold, criterion='distance')
+        combined_df['cluster'] = final_clusters
         combined_df = combine_transitions(combined_df)
         
         max_overlap = percent_overlap_matrix.values[np.triu_indices(len(combined_df), k=1)].max()
         if max_overlap <= overlap_threshold:
+            final_Z = Z
             break
         
         iteration += 1
+        final_Z = Z
 
-    return combined_df, percent_overlap_matrix, iteration, Z
+    # Final clusters to enforce consistency
+    final_clusters = fcluster(final_Z, t=overlap_threshold, criterion='distance')
+    combined_df['final_cluster'] = final_clusters
+
+    return combined_df, percent_overlap_matrix, iteration, final_Z
 
 def visualize_overlap_matrix(overlap_matrix, title='Percent Overlap Matrix'):
     """
@@ -896,7 +1090,7 @@ def plot_clustered_spectrum(df, original_df, Emax):
         x=x, 
         y=total_spectrum, 
         mode='lines', 
-        name='Total Clustered Spectrum', 
+        name='Clustered NEXAFS', 
         line=dict(color='white', width=2)
     ))
 
@@ -906,7 +1100,7 @@ def plot_clustered_spectrum(df, original_df, Emax):
         x=x, 
         y=original_spectrum, 
         mode='lines', 
-        name='Total Original Spectrum', 
+        name='Original NEXAFS', 
         line=dict(color='blue', width=2, dash='dash')
     ))
 
@@ -915,33 +1109,82 @@ def plot_clustered_spectrum(df, original_df, Emax):
         yaxis_title='Intensity',
         legend_title='Spectra',
         template='plotly_white',
-        width=800,
+        width=900,
         height=600,
     )
 
     st.plotly_chart(fig)
 
-def plot_dendrogram(Z, title="Dendrogram", xlabel="Sample Index", ylabel="Distance"):
-    # Create the dendrogram
-    fig = ff.create_dendrogram(Z, orientation='top')
+def plot_dendrogram(final_overlap_matrix, Z):
+    """
+    Plots a dendrogram and heatmap of the overlap matrix.
+
+    Args:
+        final_overlap_matrix (pd.DataFrame): The final overlap matrix to plot.
+        Z (np.ndarray): The linkage matrix resulting from hierarchical clustering.
     
-    # Invert the y-axis
-    fig.update_yaxes(autorange="reversed")
+    Returns:
+        None
+    """
+    sns.set(context="notebook", font_scale=1.2)
     
-    # Update layout
+    # Create a dendrogram to get the leaf order
+    dendrogram = sns.clustermap(final_overlap_matrix, row_linkage=Z, col_linkage=Z, cmap="viridis", figsize=(10, 8))
+    
+    # Extract the order of the leaves
+    row_order = dendrogram.dendrogram_row.reordered_ind
+    col_order = dendrogram.dendrogram_col.reordered_ind
+    
+    # Reorder the dataframe
+    final_overlap_matrix_ordered = final_overlap_matrix.iloc[row_order, col_order]
+    
+    # Plot the heatmap with reordered matrix
+    g = sns.clustermap(final_overlap_matrix_ordered, row_linkage=Z, col_linkage=Z, cmap="viridis", figsize=(10, 8))
+    
+    # Add title and labels
+    g.ax_heatmap.set_xlabel("Clusters")
+    g.ax_heatmap.set_ylabel("Clusters")
+    
+    # Label colorbar
+    colorbar = g.cax
+    colorbar.set_title('% Overlap')
+    
+    # Show plot in Streamlit
+    st.pyplot(g.fig)
+
+def plot_heatmap(final_overlap_matrix):
+    """
+    Plots a heatmap of the overlap matrix using Plotly.
+
+    Args:
+        final_overlap_matrix (pd.DataFrame): The final overlap matrix to plot.
+
+    Returns:
+        None
+    """
+    fig = px.imshow(final_overlap_matrix, 
+                    color_continuous_scale='Viridis',
+                    labels=dict(x="Clusters", y="Clusters", color="% Overlap"))
+    
     fig.update_layout(
-        #title=title,
-        xaxis_title=xlabel,
-        yaxis_title=ylabel,
-        width=600,
-        height=500,
-        template='plotly_white'
-    )
+                      xaxis_title="Clusters",
+                      yaxis_title="Clusters",
+                      height = 600,
+                      width = 500)
     
     st.plotly_chart(fig)
-
-
+    
 def save_dataframe_to_csv_in_memory(dataframe, filename):
+    """
+    Saves a DataFrame to a CSV file in memory.
+
+    Args:
+        dataframe (pd.DataFrame): The DataFrame to save.
+        filename (str): The name of the CSV file.
+
+    Returns:
+        tuple: A tuple containing the in-memory CSV buffer and the filename.
+    """
     buffer = BytesIO()
     if dataframe is not None:
         dataframe.to_csv(buffer, index=False)
@@ -949,6 +1192,16 @@ def save_dataframe_to_csv_in_memory(dataframe, filename):
     return buffer, filename
 
 def zip_dataframes(dataframes_dict, zip_filename):
+    """
+    Zips multiple DataFrames into a single zip file in memory.
+
+    Args:
+        dataframes_dict (dict): A dictionary where keys are filenames and values are DataFrames.
+        zip_filename (str): The name of the resulting zip file.
+
+    Returns:
+        BytesIO: The in-memory zip file buffer.
+    """
     zip_buffer = BytesIO()
     with ZipFile(zip_buffer, "a") as zf:
         for name, df in dataframes_dict.items():
@@ -959,6 +1212,18 @@ def zip_dataframes(dataframes_dict, zip_filename):
     return zip_buffer
 
 def load_data(directory, width1, width2, maxEnergy):
+    """
+    Loads data from a directory, processes it, and returns the results as a dictionary.
+
+    Args:
+        directory (str): The path to the directory containing data files.
+        width1 (float): The width parameter for processing.
+        width2 (float): The second width parameter for processing.
+        maxEnergy (float): The maximum energy value for processing.
+
+    Returns:
+        dict: A dictionary containing the processed data as DataFrames, or None if the directory is invalid.
+    """
     if os.path.isdir(directory):
         st.write('Processing directory:', directory)
         progress_bar = st.progress(0)
@@ -1033,29 +1298,32 @@ def display_filtered_data(data, maxEnergy, OST, molName):
 
 def display_clustering(data, OVPT, maxEnergy, molName):
     final_df, final_overlap_matrix, iterations, Z = iterative_clustering(data, OVPT, n_jobs=8)
+    print(Z)
 
-    st.write(f'Final Clusters after {iterations} iterations:')
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3 = st.columns([1,2,3])
 
     with col1:
         st.write('### Final Clusters')
+        st.write(f'Final Clusters after {iterations} iterations:')
         st.dataframe(final_df)
 
     with col2:
-        st.write('### Overlap Matrix')
-        visualize_overlap_matrix(final_overlap_matrix, title='Percent Overlap Matrix')
-
-    with col3:
         st.write('### Dendrogram for Clusters')
-        plot_dendrogram(Z, title="Cluster Dendrogram", xlabel="Cluster Index", ylabel="Euclidean Distance")
-
-    with col4:
+        plot_heatmap(final_overlap_matrix)
+        
+    with col3:
         st.write('### Original vs Clustered DFT NEXAFS')
         plot_clustered_spectrum(final_df, data, maxEnergy)
 
     return final_df
 
 def main():
+    """
+    Main function to run the Streamlit application for StoBe Loader and Clustering Algorithm.
+
+    This application allows the user to load data from a specified directory, display initial and filtered data,
+    and perform clustering on the processed data. The results can be downloaded as a ZIP file.
+    """
     st.set_page_config(layout="wide")
     st.title('StoBe Loader for Clustering Algorithm')
 
