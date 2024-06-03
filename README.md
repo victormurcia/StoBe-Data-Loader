@@ -38,15 +38,15 @@ streamlit run stobe_loader.py
 
 ## Screenshots of App
 
-![Loading Function](img/2.PNG)
+![Loading Function](img/1.PNG)
 
-![Energy Broadening Scheme](img/3.PNG)
+![Energy Broadening Scheme](img/2.PNG)
 
-![Molecule Name](img/4.PNG)
+![Molecule Name](img/3.PNG)
 
-![Oscillator Strength Threshold](img/5.PNG)
+![Oscillator Strength Threshold](img/4.PNG)
 
-![OVP Threshold](img/6.PNG)
+![OVP Threshold](img/5.PNG)
 
-![Clustering](img/7.PNG)
+![Clustering](img/6.PNG)
 
