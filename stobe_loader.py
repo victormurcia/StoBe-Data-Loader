@@ -17,23 +17,10 @@ import scipy.cluster.hierarchy as sch
 from scipy.cluster.hierarchy import linkage, fcluster
 from scipy.spatial.distance import squareform
 from joblib import Parallel, delayed
-import zipfile
-import io
-
-def save_dataframe_to_csv_in_memory(dataframe, filename):
-    buffer = io.StringIO()
-    dataframe.to_csv(buffer, index=False)
-    buffer.seek(0)
-    return buffer
-
-def zip_dataframes(dataframes_dict, zip_filename):
-    buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_DEFLATED) as zipf:
-        for name, df in dataframes_dict.items():
-            csv_buffer = save_dataframe_to_csv_in_memory(df, f"{name}.csv")
-            zipf.writestr(f"{name}.csv", csv_buffer.getvalue())
-    buffer.seek(0)
-    return buffer
+import plotly.figure_factory as ff
+import plotly.colors
+from zipfile import ZipFile
+from io import BytesIO
             
 def parse_basis_line(line):
     parts = line.split(':', 1)
@@ -536,7 +523,7 @@ def plot_total_spectra(xray_transitions, E_max, molName, os_col, os_ylim=1.0):
         total_spectrum += np.sum(gaussians, axis=1)
 
     # Plot the total spectrum
-    fig, ax1 = plt.subplots(figsize=(10, 10))
+    fig, ax1 = plt.subplots(figsize=(10, 6))
     ax1.plot(E_range, total_spectrum, label='Total Spectrum')
     ax1.set_xlabel('Energy (eV)')
     ax1.set_ylabel('Intensity')
@@ -619,7 +606,7 @@ def plot_density_spectra(xray_transitions,E_max,os_col):
     filtered_transitions = xray_transitions[xray_transitions['E'] < E_max]
     
     # Create the 2D KDE plot using seaborn
-    fig, ax = plt.subplots(figsize=(10, 10))
+    fig, ax = plt.subplots(figsize=(10, 6))
 
     # KDE plot with OSCL as weights
     sns.kdeplot(
@@ -887,34 +874,52 @@ def plot_clustered_spectrum(df, original_df, Emax):
     clusters = df['cluster'].unique()
     total_spectrum = np.zeros_like(x)
 
+    # Generate colors from a built-in Plotly color scale
+    color_scale = plotly.colors.qualitative.Prism
+
     fig = go.Figure()
 
-    for cluster in clusters:
+    for i, cluster in enumerate(clusters):
         cluster_df = df[df['cluster'] == cluster]
         cluster_spectrum = calculate_gaussian_spectrum(x, cluster_df['E'].values, cluster_df['width'].values, cluster_df['OS'].values)
         total_spectrum += cluster_spectrum
-        fig.add_trace(go.Scatter(x=x, y=cluster_spectrum, mode='lines', name=f'Cluster {cluster}'))
+        fig.add_trace(go.Scatter(
+            x=x, 
+            y=cluster_spectrum, 
+            mode='lines', 
+            name=f'Cluster {cluster}',
+            line=dict(color=color_scale[i % len(color_scale)], width=2)
+        ))
 
     # Plot the total clustered spectrum
-    fig.add_trace(go.Scatter(x=x, y=total_spectrum, mode='lines', name='Total Clustered Spectrum', line=dict(color='black', width=2)))
+    fig.add_trace(go.Scatter(
+        x=x, 
+        y=total_spectrum, 
+        mode='lines', 
+        name='Total Clustered Spectrum', 
+        line=dict(color='white', width=2)
+    ))
 
     # Plot the original transitions
     original_spectrum = calculate_gaussian_spectrum(x, original_df['E'].values, original_df['width'].values, original_df['OS'].values)
-    fig.add_trace(go.Scatter(x=x, y=original_spectrum, mode='lines', name='Total Original Spectrum', line=dict(color='blue', width=2, dash='dash')))
+    fig.add_trace(go.Scatter(
+        x=x, 
+        y=original_spectrum, 
+        mode='lines', 
+        name='Total Original Spectrum', 
+        line=dict(color='blue', width=2, dash='dash')
+    ))
 
     fig.update_layout(
-        #title='Clustered DFT NEXAFS vs Original DFT NEXAFS',
-        xaxis_title='Energy',
+        xaxis_title='Energy [eV]',
         yaxis_title='Intensity',
         legend_title='Spectra',
         template='plotly_white',
-        width=600,
-        height=500,
+        width=800,
+        height=600,
     )
 
     st.plotly_chart(fig)
-
-import plotly.figure_factory as ff
 
 def plot_dendrogram(Z, title="Dendrogram", xlabel="Sample Index", ylabel="Distance"):
     # Create the dendrogram
@@ -934,177 +939,180 @@ def plot_dendrogram(Z, title="Dendrogram", xlabel="Sample Index", ylabel="Distan
     )
     
     st.plotly_chart(fig)
+
+
+def save_dataframe_to_csv_in_memory(dataframe, filename):
+    buffer = BytesIO()
+    if dataframe is not None:
+        dataframe.to_csv(buffer, index=False)
+    buffer.seek(0)
+    return buffer, filename
+
+def zip_dataframes(dataframes_dict, zip_filename):
+    zip_buffer = BytesIO()
+    with ZipFile(zip_buffer, "a") as zf:
+        for name, df in dataframes_dict.items():
+            if df is not None:  # Check if the dataframe is not None
+                csv_buffer, filename = save_dataframe_to_csv_in_memory(df, f"{name}.csv")
+                zf.writestr(filename, csv_buffer.read())
+    zip_buffer.seek(0)
+    return zip_buffer
+
+def load_data(directory, width1, width2, maxEnergy):
+    if os.path.isdir(directory):
+        st.write('Processing directory:', directory)
+        progress_bar = st.progress(0)
+        progress_text = st.empty()
+        start_time = time.time()
+        # Process the directory
+        basis_sets, energy_results, orbital_alpha, orbital_beta, xray_transitions, atomic_coordinates = process_directory(
+            directory, progress_bar, progress_text, width1, width2, 290, maxEnergy)
+        end_time = time.time()
+        st.write(f'Processing completed in {end_time - start_time:.2f} seconds.')
+        return {
+            'basis_sets': basis_sets,
+            'energy_results': energy_results,
+            'orbital_alpha': orbital_alpha,
+            'orbital_beta': orbital_beta,
+            'xray_transitions': xray_transitions,
+            'atomic_coordinates': atomic_coordinates
+        }
+    else:
+        st.write('Invalid directory. Please enter a valid directory path.')
+        return None
+
+def display_initial_data(data):
+    df = data['atomic_coordinates']
+    unique_file = df['Originating File'].unique()[0]
+    filtered_atomic_coordinates = df[df['Originating File'] == unique_file]
+
+    col1, col2, col3 = st.columns([2, 3, 3])
+    with col1:
+        st.write('### Atomic Coordinates')
+        st.dataframe(filtered_atomic_coordinates)
+    with col2:
+        st.write('### Basis Sets')
+        st.dataframe(data['basis_sets'])
+    with col3:
+        st.write('### Molecule Visualization')
+        view = visualize_xyz_with_stmol(filtered_atomic_coordinates, "molecule.xyz")
+        showmol(view, height=400, width=400)
+        
+    col1, col2, col3, col4 = st.columns([4, 2, 2, 2])    
+    with col1:
+        st.write('### Molecule Energies')
+        st.dataframe(data['energy_results'])
+    with col2:
+        st.write('### Orbital Alpha')
+        st.dataframe(data['orbital_alpha'])
+    with col3:
+        st.write('### Orbital Beta')
+        st.dataframe(data['orbital_beta'])
+    with col4:
+        st.write('### Core Hole, HOMO, and LUMO')
+        core_hole_homo_lumo_df = find_core_hole_homo_lumo(data['orbital_alpha'])
+        st.dataframe(core_hole_homo_lumo_df)
+
+def display_filtered_data(data, maxEnergy, OST, molName):
+    filtered_xray_transitions = filter_and_normalize_xray(data['xray_transitions'], maxEnergy, OST)
+
+    col1, col2, col3 = st.columns([3, 2, 2])
+    with col1:
+        st.write('### Energy and OS Filtered X-ray Transitions')
+        st.dataframe(filtered_xray_transitions)
+    with col2:
+        st.write('### Energy and OS Filtered DFT NEXAFS')
+        plot_total_spectra(filtered_xray_transitions, maxEnergy, molName, 'normalized_os', (OST / 100) * 2)
+    with col3:
+        st.write('### Energy and OS Filtered KDE')
+        plot_density_spectra(filtered_xray_transitions, maxEnergy, 'normalized_os')
+    st.write('### Excitation Centers DFT NEXAFS')
+    plot_individual_spectra(data['xray_transitions'], maxEnergy)
     
+    return filtered_xray_transitions
+
+def display_clustering(data, OVPT, maxEnergy, molName):
+    final_df, final_overlap_matrix, iterations, Z = iterative_clustering(data, OVPT, n_jobs=8)
+
+    st.write(f'Final Clusters after {iterations} iterations:')
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+        st.write('### Final Clusters')
+        st.dataframe(final_df)
+
+    with col2:
+        st.write('### Overlap Matrix')
+        visualize_overlap_matrix(final_overlap_matrix, title='Percent Overlap Matrix')
+
+    with col3:
+        st.write('### Dendrogram for Clusters')
+        plot_dendrogram(Z, title="Cluster Dendrogram", xlabel="Cluster Index", ylabel="Euclidean Distance")
+
+    with col4:
+        st.write('### Original vs Clustered DFT NEXAFS')
+        plot_clustered_spectrum(final_df, data, maxEnergy)
+
+    return final_df
+
 def main():
     st.set_page_config(layout="wide")
     st.title('StoBe Loader for Clustering Algorithm')
 
     col1, col2, col3, col4, col5, col6, col7 = st.columns([2, 1, 1, 1, 1, 1, 1])
-
     with col1:
         directory = st.text_input('Enter the directory containing the output folders:')
-    
     with col2:
-        width1 = st.number_input('Width 1 (eV)', min_value=0.01, max_value=20.0, value=0.5)/2.355
-    
+        width1 = st.number_input('Width 1 (eV)', min_value=0.01, max_value=20.0, value=0.5) / 2.355
     with col3:
-        width2 = st.number_input('Width 2 (eV)', min_value=0.01, max_value=20.0, value=12.0)/2.355
-        
+        width2 = st.number_input('Width 2 (eV)', min_value=0.01, max_value=20.0, value=12.0) / 2.355
     with col4:
         maxEnergy = st.number_input('Maximum DFT Energy (eV)', min_value=0.0, max_value=1000.0, value=320.0)
-    
     with col5:
         molName = st.text_input('Enter the name of your molecule:')
-    
     with col6:
         OST = st.number_input('OS Threshold (%)', min_value=0.0, max_value=100.0, value=10.0)
-        
     with col7:
         OVPT = st.number_input('OVP Threshold (%)', min_value=0.0, max_value=100.0, value=50.0)
 
+    routine = st.radio("Select Routine", ("Initial Data Loading", "Initial Data Displays", "Filtered Data Displays", "Clustering"))
 
-    if directory and st.button('Process Directory'):
-        if os.path.isdir(directory):
-            st.write('Processing directory:', directory)
-            
-            progress_bar = st.progress(0)
-            progress_text = st.empty()
-            
-            start_time = time.time()
-            # Process the directory
-            basis_sets, energy_results, orbital_alpha, orbital_beta, xray_transitions, atomic_coordinates = process_directory(directory, progress_bar, progress_text, width1, width2, 290, maxEnergy)
-            end_time = time.time()
-            
-            st.write(f'Processing completed in {end_time - start_time:.2f} seconds.')
-            
-            # Store the results in session state
-            st.session_state['processed_data'] = {
-                'basis_sets': basis_sets,
-                'energy_results': energy_results,
-                'orbital_alpha': orbital_alpha,
-                'orbital_beta': orbital_beta,
-                'xray_transitions': xray_transitions,
-                'atomic_coordinates': atomic_coordinates
-            }
-        else:
-            st.write('Invalid directory. Please enter a valid directory path.')
+    if routine == "Initial Data Loading":
+        if directory and st.button('Process Directory'):
+            data = load_data(directory, width1, width2, maxEnergy)
+            if data:
+                st.session_state['processed_data'] = data
+    elif routine == "Initial Data Displays":
+        if 'processed_data' in st.session_state:
+            display_initial_data(st.session_state['processed_data'])
+    elif routine == "Filtered Data Displays":
+        if 'processed_data' in st.session_state:
+            filtered_data = display_filtered_data(st.session_state['processed_data'], maxEnergy, OST, molName)
+            st.session_state['filtered_data'] = filtered_data
+    elif routine == "Clustering":
+        if 'filtered_data' in st.session_state:
+            final_df = display_clustering(st.session_state['filtered_data'], OVPT, maxEnergy, molName)
+            st.session_state['final_df'] = final_df
 
     if 'processed_data' in st.session_state:
-        if st.button('Display Results'):
-            data = st.session_state['processed_data']
-            atomic_coordinates = data['atomic_coordinates']
-            
-            
-            # Display Atomic Coordinates and Molecule Visualization side by side
-            col1,col2,col3  = st.columns([3,2,3])
-            with col1:
-                st.write('### Atomic Coordinates')
-                st.dataframe(atomic_coordinates)
-            
-            with col2:
-                st.write('### Molecule Visualization')
-                # Dropdown menu to filter based on Originating File
-                unique_file = atomic_coordinates['Originating File'].unique()[0]
-                #selected_file = st.selectbox('Select Originating File:', unique_files)
-                
-                # Filter the dataframe based on the selected file
-                filtered_atomic_coordinates = atomic_coordinates[atomic_coordinates['Originating File'] == unique_file]
-                
-                if not filtered_atomic_coordinates.empty:
-                    # Create XYZ file from filtered DataFrame
-                    dataframe_to_xyz(filtered_atomic_coordinates, "molecule.xyz")
-                    
-                    # Visualize the molecule from the XYZ file using Stmol and py3Dmol
-                    view = visualize_xyz_with_stmol(filtered_atomic_coordinates, "molecule.xyz")
-                    showmol(view, height=400, width=400)
-                else:
-                    st.write("No data available for the selected file.")
-            with col3:
-                st.write('### Basis Sets')
-                st.dataframe(data['basis_sets'])
-            
-            col1, col2,col3,col4 = st.columns([3, 2, 2, 2])
-            with col1:
-                st.write('### Molecule Energies')
-                st.dataframe(data['energy_results'])
-            with col2:
-                st.write('### Orbital Alpha')
-                st.dataframe(data['orbital_alpha'])
-            with col3:
-                st.write('### Orbital Beta')
-                st.dataframe(data['orbital_beta'])
-            with col4:
-                core_hole_homo_lumo_df = find_core_hole_homo_lumo(data['orbital_alpha'])
-                st.write('### Core Hole, HOMO, and LUMO')
-                st.dataframe(core_hole_homo_lumo_df)
-            
-            # Display X-ray Transitions Data and plot next to it
-            col1, col2,col3,col4 = st.columns([3, 6, 3, 3])
-            with col1:
-                st.write('### Initial X-ray Transitions')
-                st.dataframe(data['xray_transitions'])
-            with col2:
-                st.write('### Excitation Centers DFT NEXAFS')
-                plot_individual_spectra(data['xray_transitions'], maxEnergy)
-            with col3:
-                st.write('### Initial DFT NEXAFS')
-                plot_total_spectra(data['xray_transitions'], maxEnergy, molName, 'OS')
-            with col4:
-                ('### Initial KDE')
-                plot_density_spectra(data['xray_transitions'],maxEnergy, 'OS')
-                
-            col1, col2,col3 = st.columns([5, 2, 2])
-            with col1:
-                st.write('### Energy and OS Filtered X-ray Transitions')
-                filtered_xray_transitions = filter_and_normalize_xray(data['xray_transitions'], maxEnergy, OST)
-                st.dataframe(filtered_xray_transitions)
-            with col2:
-                st.write('### Energy and OS Filtered DFT NEXAFS')
-                plot_total_spectra(filtered_xray_transitions, maxEnergy, molName, 'normalized_os',(OST/100)*2)
-            with col3:
-                st.write('### Energy and OS Filtered KDE')
-                plot_density_spectra(filtered_xray_transitions,maxEnergy,'normalized_os')
-            
-            st.write('### Clustering the DFT Transitions')
-            col1, col2, col3, col4 = st.columns([1, 2, 2, 2])
-            final_df, final_overlap_matrix, iterations, Z = iterative_clustering(filtered_xray_transitions, OVPT, n_jobs=8)
-            # Display results
-            with col1:
-                st.write('### Cluster Parameters')
-                st.write(f'Final Clusters after {iterations} iterations:')
-                st.write(final_df)
-            with col2:
-                st.write('### Overlap Matrix')
-                #st.write(final_overlap_matrix)
-                visualize_overlap_matrix(final_overlap_matrix, title='Percent Overlap Matrix')
-            with col3:
-                st.write('### Dendrogram for Clusters')
-                # Optionally, plot the dendrogram
-                plot_dendrogram(Z, title="Cluster Dendrogram", xlabel="Cluster Index", ylabel="Euclidean Distance")
-            with col4:
-                st.write('### Original vs Clustered DFT NEXAFS')
-                plot_clustered_spectrum(final_df, data['xray_transitions'],maxEnergy)
-            
-            # Add a button to download all dataframes as CSV in a ZIP file
-            data_to_save = {
-                f"{molName}_basis_sets": data['basis_sets'],
-                f"{molName}_energy_results": data['energy_results'],
-                f"{molName}_orbital_alpha": data['orbital_alpha'],
-                f"{molName}_orbital_beta": data['orbital_beta'],
-                f"{molName}_xray_transitions": data['xray_transitions'],
-                f"{molName}_atomic_coordinates": data['atomic_coordinates'],
-                f"{molName}_final_df": final_df,
-                f"{molName}_core_hole_homo_lumo": core_hole_homo_lumo_df
-            }
+        data_to_save = {
+            f"{molName}_basis_sets": st.session_state['processed_data'].get('basis_sets'),
+            f"{molName}_energy_results": st.session_state['processed_data'].get('energy_results'),
+            f"{molName}_orbital_alpha": st.session_state['processed_data'].get('orbital_alpha'),
+            f"{molName}_orbital_beta": st.session_state['processed_data'].get('orbital_beta'),
+            f"{molName}_xray_transitions": st.session_state['processed_data'].get('xray_transitions'),
+            f"{molName}_atomic_coordinates": st.session_state['processed_data'].get('atomic_coordinates'),
+            f"{molName}_final_df": st.session_state.get('final_df'),
+            f"{molName}_core_hole_homo_lumo": find_core_hole_homo_lumo(st.session_state['processed_data'].get('orbital_alpha'))
+        }
+        zip_filename = f"{molName}_dataframes.zip"
+        zip_buffer = zip_dataframes(data_to_save, zip_filename)
+        st.download_button(
+            label="Download ZIP",
+            data=zip_buffer,
+            file_name=zip_filename,
+            mime='application/zip'
+        )
 
-            zip_filename = f"{molName}_dataframes.zip"
-            zip_buffer = zip_dataframes(data_to_save, zip_filename)
-
-            st.download_button(
-                label="Download ZIP",
-                data=zip_buffer,
-                file_name=zip_filename,
-                mime='application/zip'
-            )
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
