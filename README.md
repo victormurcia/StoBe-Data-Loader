@@ -16,6 +16,7 @@ The routines have been parallelized wherever possible. This is still very much a
   - seaborn
   - scipy
   - joblib
+    
 3.Run the application by navigating to the location of the stobe_loader.py file via
 ```
 streamlit run stobe_loader.py
@@ -34,7 +35,7 @@ streamlit run stobe_loader.py
 5. Set the desired values for the energy dependent broadening scheme using the Width 1, Width 2 and Maximum DFT Energy input boxes. The default values work very well for the Carbon edge NEXAFS.
 6. Set the name of your molecule.
 7. For the Clustering Algorithm, set an oscillator strength threshold and an overlap threshold using the given input boxes
-8. There is an initial version of a clustering algorithm included but it is nowhere near as robust as the IGOR implementation at the moment.  
+8. There is an initial version of a clustering algorithm included but it is not as deeloped as the IGOR implementation at the moment.  
 
 ## Screenshots of App
 
